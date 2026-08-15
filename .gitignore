@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Proprietary assignment brief
+/Alza Assignment - AI Engineer.pdf
