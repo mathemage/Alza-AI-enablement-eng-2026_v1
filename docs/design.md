@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 03. Later issues must update
+Status: frozen baseline updated through backlog item 04. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -12,9 +12,10 @@ original Gmail thread.
 
 The implementation baseline is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, Ruff,
 mypy, Docker, Terraform, and GitHub Actions. Application packages live under `src/`,
-tests under `tests/`, and `uv.lock` is committed. Backlog item 03 adds only tested GCP
-configuration and its credential-free CI gate. It does not apply, deploy, add secret
-versions, call cloud APIs, or add frontend implementation.
+tests under `tests/`, and `uv.lock` is committed. Backlog item 04 adds only the Gmail
+gateway boundary, its deterministic fake and mocked adapter tests, and the interactive
+operator OAuth bootstrap command. It does not activate a watch, access a live mailbox
+in default tests, upload a secret, deploy, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -176,7 +177,7 @@ before real adapters.
 
 | Interface | Required operations and contract |
 | --- | --- |
-| `GmailGateway` | Start/renew/stop a watch; page history; page unread messages; fetch a complete message/part; inspect a thread for deterministic outbound headers; send a MIME reply in a supplied thread; and add/remove labels. It maps vendor errors to typed retryable, terminal, or ambiguous-send outcomes and never logs payloads or credentials. |
+| `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
 | `AttachmentAnalyzer` | Analyze one validated `Attachment` into one bounded `AttachmentInsight`. The coordinator invokes it once per attachment per processing attempt and limits total analysis concurrency to `2`. |
 | `ReplyProvider` | Generate one `GeneratedReply` from current normalized text, bounded insights, reply headers, and a search policy. Gemini and OpenRouter obey one shared contract and expose typed retry classification. |
 | `WorkPublisher` | Publish one versioned metadata-only work item with a deterministic work key used by the consumer for idempotency, and return only after Pub/Sub accepts it. Pub/Sub delivery itself remains at-least-once; batch success is all-or-cursor-does-not-advance. |
@@ -185,16 +186,44 @@ before real adapters.
 Application orchestration depends only on these interfaces. Fakes cover normal tests;
 vendor calls and paid/live calls are opt-in acceptance concerns.
 
+The issue-04 Gmail adapter always uses `userId="me"`. Watch requests send the exact
+fully qualified topic, `labelIds=["INBOX"]`, and
+`labelFilterBehavior="include"`, returning the new history ID and integer epoch-
+millisecond expiration. History requests require a starting history ID, use a maximum
+page size of `500`, preserve the next-page token and final history ID, and surface a
+stale-cursor `404` as a terminal typed error for the later synchronization policy to
+handle. Unread discovery uses both `INBOX` and `UNREAD`; complete message retrieval
+uses `format="full"`. Label modification sends only caller-supplied add/remove IDs.
+
+Thread inspection uses `format="metadata"` and requests only `Message-ID` and
+`X-Alza-AI-Source-Message-ID`; it must not retrieve prior bodies. Sending supplies
+both the original Gmail `threadId` and unpadded base64url MIME bytes. Retryable reads
+and mutations map transport failure, `408`, `429`, and Google `5xx` to
+`GmailRetryableError`; all other Gmail `4xx` and malformed successful responses map
+to `GmailTerminalError`. A transport failure or `5xx` after a send begins maps to
+`GmailAmbiguousSendError`, because Gmail may have accepted the message. Public error
+text contains only a stable code and optional HTTP status, never a vendor response,
+message data, MIME bytes, email address, or credential.
+
 ## Gmail and OAuth lifecycle
 
-1. The operator creates or selects one dedicated consumer Gmail mailbox and an OAuth
-   installed-app client in the intended Google Cloud project. The consent screen and
-   authorized account are confirmed before any credential is stored.
-2. `uv run alza-ai oauth bootstrap` requests `access_type=offline` and explicit
-   consent with only `https://www.googleapis.com/auth/gmail.modify`. It rejects an
-   unexpected account or expanded scope, never prints credentials, and writes only
-   to an explicitly selected `0600` local destination or an explicitly named Secret
-   Manager secret. Deployment uses Secret Manager.
+1. The operator creates or selects one dedicated consumer Gmail mailbox, enables the
+   Gmail API, and creates a Desktop installed-app OAuth client in the intended Google
+   Cloud project. The consent-screen user type, publishing status, and authorized
+   account are confirmed before any credential is stored. Desktop authorization uses
+   the system browser and a random-port `127.0.0.1` loopback listener; deprecated
+   out-of-band copy/paste authorization is not used.
+2. `uv run alza-ai oauth bootstrap --client-secrets PATH --expected-account ADDRESS
+   --token-output PATH` has no implicit credential destination. It requests
+   `access_type=offline` and `prompt=consent` with the single-item scope tuple
+   `https://www.googleapis.com/auth/gmail.modify`. After consent it requires a refresh
+   token, rejects any granted-scope expansion, calls the Gmail profile endpoint to
+   match the dedicated mailbox case-insensitively, and only then creates the explicit
+   local output with mode `0600` and without overwriting an existing path. The output
+   contains only the refresh token and exact scope; the access token and OAuth client
+   secret remain excluded. The command prints only a generic completion or sanitized
+   error, never a credential. Secret Manager upload remains an explicit deployment
+   operation in backlog item 13.
 3. An external OAuth app left in Testing can issue refresh tokens that expire after
    seven days. Before unattended use, the operator moves the consent configuration
    to Production as appropriate and verifies the dedicated account remains granted.
@@ -215,6 +244,14 @@ vendor calls and paid/live calls are opt-in acceptance concerns.
 Labels `AI/Processed` and `AI/Error` are created idempotently for the dedicated
 mailbox. OAuth material is never committed, embedded in an image, logged, or returned
 by an endpoint.
+
+The deterministic reply builder accepts the original Gmail message ID, opaque mailbox
+key, original RFC `Message-ID`, unfolded semantic `Subject`, prior ordered
+`References`, recipient, and generated text. It emits the frozen deterministic
+`Message-ID`, preserves the exact semantic `Subject`, sets `In-Reply-To` to the source
+RFC ID, and appends that ID to `References` exactly once. The gateway transports those
+MIME bytes with the original Gmail `threadId`; it does not regenerate or rewrite the
+threading headers.
 
 ## MIME and attachment policy
 

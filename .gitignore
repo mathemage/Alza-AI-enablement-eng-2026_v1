@@ -151,6 +151,10 @@ activemq-data/
 .env*
 !.env.example
 .envrc
+client_secret*.json
+credentials*.json
+refresh-token*.json
+token*.json
 .venv
 env/
 venv/

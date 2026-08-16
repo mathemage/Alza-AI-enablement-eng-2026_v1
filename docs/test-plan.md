@@ -102,6 +102,49 @@ terraform -chdir=infra test
 `terraform init -backend=false` may download the locked provider but configures no
 backend and uses no cloud credential. `terraform test` uses only the mocked provider.
 
+## Issue 04 executable contract
+
+The focused suite is `uv run pytest tests/test_gmail_gateway.py tests/test_oauth.py
+-q`. Its first Red run occurs after this specification and the focused tests exist,
+but before the Gmail module and CLI command exist; the expected failure must identify
+the missing `GmailGateway`/OAuth application contract rather than a missing third-party
+package, credential, executable, or network connection. The failing state is not
+committed.
+
+A shared contract first drives a deterministic fake and then the adapter against an
+in-process mocked Gmail service. It proves:
+
+- start/renew watch uses the exact topic, `INBOX`, and `include`, returns history and
+  expiration, and stop is observable;
+- history and unread pages preserve stable ordering, cursors/page tokens, message and
+  thread IDs, and never fetch a live mailbox;
+- complete messages round-trip unchanged, external attachments are strict base64url
+  bytes, and label additions/removals are idempotently observable;
+- thread inspection returns only the two deterministic identity headers and never a
+  body, while send preserves the original `threadId` and the exact MIME bytes;
+- the reply builder emits a stable `Message-ID`, matching `Subject`, source
+  `In-Reply-To`, and ordered deduplicated `References`;
+- mocked `408`/`429`/`5xx` and transport failures become typed retryable errors for
+  ordinary calls, other `4xx` become typed terminal errors, and uncertain send
+  transport/`5xx` outcomes become typed ambiguous-send errors; exception/output text
+  contains no response body, email content, MIME data, or token.
+
+OAuth tests inject a fake installed-app flow and mocked Gmail profile lookup. They
+assert the only requested scope is
+`https://www.googleapis.com/auth/gmail.modify`, browser authorization uses a random
+`127.0.0.1` loopback port with offline explicit consent, and the expected mailbox is
+verified before a refresh credential is written. The CLI requires explicit
+`--client-secrets`, `--expected-account`, and `--token-output`; success creates a new
+`0600` file containing only the refresh token and exact scope. Expanded scopes,
+missing refresh tokens, account mismatch, and an existing output fail with sanitized
+typed errors and no credential output. `uv run alza-ai oauth bootstrap --help` is the
+only subprocess CLI integration check and performs no OAuth or Gmail call. Live Gmail
+and Secret Manager mutation remain opt-in issue-13 gates.
+
+After Refactor, run the focused command above and the complete existing suite with
+`uv run pytest -q`, followed by Ruff formatting/linting and strict mypy. Every normal
+Gmail/OAuth test must use the fake or mock; any network attempt is a test defect.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -114,11 +157,11 @@ backend and uses no cloud credential. `terraform test` uses only the mocked prov
 | Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The backlog item 03 CI gate runs Ruff formatting and linting, mypy, the complete
-currently available pytest suite, the container smoke check, and all four Terraform
-commands above. The eventual complete CI gate will also run contract and broader
-black-box integration tests and enforce at least **85% line coverage** as those layers
-are introduced.
+The backlog item 04 CI gate runs Ruff formatting and linting, mypy, the complete
+currently available pytest suite, the container smoke check, the offline Terraform
+checks, and the mocked Gmail/OAuth contracts. The eventual complete CI gate will also
+run broader black-box integration tests and enforce at least **85% line coverage** as
+those layers are introduced.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
 
