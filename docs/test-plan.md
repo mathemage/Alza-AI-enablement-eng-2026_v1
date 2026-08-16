@@ -60,6 +60,48 @@ not root, starts it on port `8080`, and applies the same HTTP assertion. Playwri
 not installed because this backlog item has no browser UI; live HTTP is the equivalent
 integration boundary.
 
+## Issue 03 executable contract
+
+The focused suite runs from `infra/` with `mock_provider "google"`; it must neither
+load GCP credentials nor call, plan, or apply against GCP. Before resources exist,
+the test must reach Terraform's configuration-evaluation boundary and report an
+undeclared regional resource. A missing Terraform executable, provider download,
+credential, or unrelated syntax error is not acceptable Red evidence.
+
+The mocked tests prove all of the following:
+
+- Cloud Run, Firestore, scratch storage, Artifact Registry, Scheduler, and all secret
+  replicas select `europe-west3`; Pub/Sub persistence is restricted to that region;
+- Cloud Run has internal ingress, IAM invocation, minimum `0`, maximum `2`,
+  concurrency `1`, one vCPU, 1 GiB, and timeout `115s`;
+- the scratch lifecycle deletes after one day, Firestore defines only its database,
+  and the three secret containers use user-managed replication without a secret
+  version or payload resource;
+- exactly the two named primary topic/subscription pairs and the one named shared
+  dead-letter pair exist, with `120s` acknowledgement, seven-day retention,
+  `10s..600s` retry, and `5` delivery attempts on both primary paths;
+- both push subscriptions and both Scheduler jobs use their dedicated service
+  accounts, OIDC, the exact service URI audience, and their frozen route;
+- runtime access is limited to Firestore, Vertex AI, log/metric write, scratch-object,
+  `email-work` publish, and the named secrets; Gmail publishes only to
+  `gmail-notifications`; no public invoker member exists;
+- maximum instances, model/search/output ceilings, budget amount and thresholds, and
+  notification channels remain inputs bounded at or below the frozen exposure caps;
+- the CI workflow contains each offline Terraform gate and no Terraform plan or apply.
+
+The focused and complete Terraform commands are:
+
+```text
+terraform -chdir=infra test -filter=tests/infrastructure.tftest.hcl
+terraform fmt -check -recursive
+terraform -chdir=infra init -backend=false
+terraform -chdir=infra validate
+terraform -chdir=infra test
+```
+
+`terraform init -backend=false` may download the locked provider but configures no
+backend and uses no cloud credential. `terraform test` uses only the mocked provider.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -72,10 +114,11 @@ integration boundary.
 | Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The backlog item 02 CI gate runs Ruff formatting and linting, mypy, the complete
-currently available pytest suite, and the container smoke check. The eventual
-complete CI gate will also run contract, Terraform, and broader black-box integration
-tests and enforce at least **85% line coverage** as those layers are introduced.
+The backlog item 03 CI gate runs Ruff formatting and linting, mypy, the complete
+currently available pytest suite, the container smoke check, and all four Terraform
+commands above. The eventual complete CI gate will also run contract and broader
+black-box integration tests and enforce at least **85% line coverage** as those layers
+are introduced.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
 
@@ -89,7 +132,7 @@ syntax error is not acceptable Red evidence.
 | --- | --- |
 | 01 | Documentation validation reports the absent architecture document or required section. |
 | 02 | The health test reaches the service boundary and observes that `GET /healthz` is absent or does not return the frozen payload. |
-| 03 | Mocked-provider Terraform assertions report absent or incorrect regional, private, bounded resources before those resources are defined. |
+| 03 | Mocked-provider Terraform evaluation reports an undeclared regional Cloud Run resource before any GCP resource is defined. |
 | 04 | Shared fake-gateway operations and OAuth bootstrap assertions fail because the gateway/command contract is absent. |
 | 05 | Synthetic plain/HTML/nested MIME and PDF/MP3/WAV/JPEG/PNG boundary fixtures fail because the pure parser is absent. |
 | 06 | Fake storage/model tests fail at the absent analyzer, concurrency bound, or unconditional cleanup behavior. |
