@@ -236,6 +236,56 @@ Because issue 06 exposes no new HTTP route, its live integration smoke starts th
 existing `uvicorn` entry point and verifies `GET /healthz`; the fake adapters are the
 executable attachment boundary.
 
+## Issue 07 executable contract
+
+The focused suite is `uv run pytest tests/test_reply_providers.py -q`. Its first Red
+run occurs after this specification and the shared provider contract exists, but
+before `alza_ai.reply_providers` exists. The expected failure is
+`ModuleNotFoundError: No module named 'alza_ai.reply_providers'`; a missing credential,
+network connection, provider SDK response, or unrelated test defect is not acceptable
+Red evidence. The failing state is not committed.
+
+One parametrized asynchronous contract runs unchanged against Gemini and OpenRouter
+adapters backed by deterministic in-process clients and clocks. It proves that both:
+
+- accept only normalized current-message text and ordered bounded
+  `AttachmentInsight` values, make exactly one selected-provider call, and return the
+  same frozen `GeneratedReply` shape;
+- trim prose, normalize CRLF/CR to LF, cap plain text and application-escaped HTML at
+  8,000 characters, never trust provider HTML, and leave citations empty while search
+  is disabled;
+- report the configured provider and model rather than untrusted response metadata;
+  clamp input/output/total token fields to `0..1,000,000`; and expose deterministic
+  non-negative provider and total latency in integer milliseconds, capped at
+  3,600,000 with provider latency no greater than total latency;
+- map empty or malformed success responses to terminal
+  `reply_provider_invalid_response`, and timeouts, connections, `408`, `429`, and
+  provider `5xx` to retryable `reply_provider_unavailable`, without leaking the fake
+  provider's private marker.
+
+Configuration tests construct the default Gemini provider with
+`RESPONSE_PROVIDER=gemini` and `GEMINI_MODEL=gemini-3.6-flash` while
+`OPENROUTER_API_KEY` is absent, and assert that no OpenRouter credential or client is
+read. Separate cases prove that selected OpenRouter rejects an absent/blank key, uses
+`OPENROUTER_MODEL=anthropic/claude-opus-5` by default, honors one non-empty override,
+and does not construct the Gemini reply client. Invalid provider/model settings fail
+with sanitized configuration codes.
+
+Mocked-adapter request assertions require Gemini `v1` at `global` and one text-only
+`generate_content` call with no tools. OpenRouter uses `httpx.MockTransport` to require
+one non-streaming `POST /api/v1/chat/completions`, its key only in the bearer header,
+the configured model and 2,048-token bound, and an allowlisted JSON body containing no
+original attachment bytes, scratch URI, credential, prior-thread content, or unrelated
+Gmail metadata. Failure tests select one provider, raise its typed error, and prove the
+other client has zero constructions and calls. No test opens a network connection or
+makes a live, cloud, search, or paid-provider request.
+
+After Refactor, run the focused command, the complete suite with `uv run pytest -q`,
+`uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src tests`.
+Because issue 07 adds no HTTP route, its black-box integration smoke starts the
+existing `uvicorn` entry point and verifies `GET /healthz`; the shared fake/client
+suite is the executable reply-provider boundary.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |

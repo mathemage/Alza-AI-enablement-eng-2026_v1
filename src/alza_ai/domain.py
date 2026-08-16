@@ -25,6 +25,27 @@ class AttachmentInsight:
 
 
 @dataclass(frozen=True, slots=True)
+class Citation:
+    url: str = field(repr=False)
+    title: str = field(repr=False)
+    provider: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedReply:
+    text: str = field(repr=False)
+    html: str = field(repr=False)
+    citations: tuple[Citation, ...] = field(repr=False)
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    provider_latency_ms: int
+    total_latency_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class InboundEmail:
     mailbox_key: str
     message_id: str

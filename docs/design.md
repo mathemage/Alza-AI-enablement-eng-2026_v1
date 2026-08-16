@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 06. Later issues must update
+Status: frozen baseline updated through backlog item 07. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -17,9 +17,11 @@ gateway boundary, its deterministic fake and mocked adapter tests, and the inter
 operator OAuth bootstrap command. Backlog item 05 adds only immutable email domain
 values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. Backlog item
 06 adds only bounded attachment insights, regional scratch-storage and Gemini
-multimodal adapters, and the asynchronous attachment analyzer. It does not integrate
-parsing or analysis into a processing route, generate a reply, activate a watch,
-access a live mailbox, deploy, or add frontend implementation.
+multimodal adapters, and the asynchronous attachment analyzer. Backlog item 07 adds
+only provider-neutral generated replies, one shared reply contract, Gemini and
+OpenRouter reply adapters, and selected-provider configuration. It does not integrate
+parsing, analysis, or generation into a processing route, enable search or citations,
+activate a watch, access a live mailbox, deploy, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -168,11 +170,12 @@ only in request memory.
 | `Attachment` | Gmail part ID, sanitized filename, canonical document/audio/image family and MIME type, `attachment` or `inline` disposition, optional normalized content ID, decoded byte length, and immutable decoded bytes. A value exists only after all MIME and size checks pass; filename, content ID, and bytes are excluded from its representation. |
 | `AttachmentInsight` | Original sanitized filename and canonical media type copied from `Attachment`, a trimmed summary (maximum 2,000 characters), trimmed extracted text or transcript (maximum 16,000 characters), at most 20 trimmed relevant facts of 500 characters each, and at most 10 trimmed warnings of 500 characters each. Empty fact/warning entries are discarded. Content-bearing fields are excluded from its representation. |
 | `Citation` | Canonical HTTP(S) URL of at most 2,048 characters, title of at most 200 characters, and optional provider label. URLs have a valid public host and no credentials; equality uses the canonical URL. |
-| `GeneratedReply` | Plain text, application-rendered safe HTML, at most five `Citation` values, selected provider/model, bounded usage metadata held in memory, and provider/total latency. Plain text and rendered HTML are each limited to 8,000 characters. |
+| `GeneratedReply` | Normalized plain text, application-rendered safe HTML, an empty `Citation` tuple until backlog item 08, selected provider/model, non-negative input/output/total token counts each capped at 1,000,000, and non-negative provider/total latency in integer milliseconds capped at 3,600,000. Provider latency never exceeds total latency. Plain text and rendered HTML are each limited to 8,000 characters, and content-bearing fields are excluded from its representation. |
 
-The application, not a provider, constructs the final multipart plain-text/safe-HTML
-reply and deterministic headers. Model output is always untrusted input to that
-renderer.
+The application client, not either provider, trims the model's prose, normalizes CRLF
+and CR line endings to LF, bounds it, and constructs equivalent plain-text and escaped
+HTML alternatives plus trusted provider/model, usage, and timing metadata. Provider
+HTML is never accepted. The later coordinator owns deterministic message headers.
 
 ## Integration interfaces
 
@@ -183,7 +186,7 @@ before real adapters.
 | --- | --- |
 | `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
 | `AttachmentAnalyzer` | Analyze an ordered sequence of validated `Attachment` values into ordered bounded `AttachmentInsight` values. It owns staging, one Gemini call per successfully staged attachment, concurrency `2`, timeout normalization, and unconditional scratch deletion. An ordinary partial failure completes every attachment job and then raises the first sanitized error in input order; it never returns partial insights. |
-| `ReplyProvider` | Generate one `GeneratedReply` from current normalized text, bounded insights, reply headers, and a search policy. Gemini and OpenRouter obey one shared contract and expose typed retry classification. |
+| `ReplyProvider` | Asynchronously generate one `GeneratedReply` from only current normalized text and an ordered sequence of bounded `AttachmentInsight` values. Gemini and OpenRouter obey this same signature and output contract, make one generation call, keep citations empty and search tools disabled in backlog item 07, and expose typed retry classification. |
 | `WorkPublisher` | Publish one versioned metadata-only work item with a deterministic work key used by the consumer for idempotency, and return only after Pub/Sub accepts it. Pub/Sub delivery itself remains at-least-once; batch success is all-or-cursor-does-not-advance. |
 | `ProcessingStore` | Transactionally own mailbox sync/cursors and per-message claims, leases, attempt counts, state transitions, deterministic outbound IDs, reconciliation checkpoints, and sanitized failures. It accepts no content-bearing domain value. |
 
@@ -401,17 +404,39 @@ Exactly one reply provider is selected at startup:
 
 - `RESPONSE_PROVIDER=gemini` is the default, with
   `GEMINI_MODEL=gemini-3.6-flash`. It uses Google's `global` Gemini endpoint and makes
-  no EU-only model-processing guarantee. Google application credentials are checked;
-  no OpenRouter key is required.
+  no EU-only model-processing guarantee. Its Vertex AI client uses Google application
+  credentials and the selected project; no OpenRouter setting or key is read or
+  required.
 - `RESPONSE_PROVIDER=openrouter` requires its own API key and uses configurable
   `OPENROUTER_MODEL=anthropic/claude-opus-5` by default. Gemini reply credentials are
   not required for selection, although attachment analysis still uses its separately
   authorized Gemini path.
 
-Only credentials for the selected reply provider are validated. A selected-provider
-failure is returned with its retry classification; the application never calls the
-other reply provider as fallback. OpenRouter receives normalized current-message text
-and bounded insights, never original bytes or scratch URLs.
+`RESPONSE_PROVIDER` accepts only `gemini` or `openrouter`; an empty or other value is a
+sanitized startup configuration error. Selection branches before credential access or
+adapter construction, so only the selected provider's credentials are validated and
+only its client exists. `OPENROUTER_API_KEY` must be non-empty only for OpenRouter.
+An absent model override uses the selected default above; a present blank override is
+a sanitized configuration error.
+
+Both adapters serialize one application-owned instruction plus an object containing
+only `current_email_text` and ordered `attachment_insights`. Each insight contains its
+bounded filename, media type, summary, extracted text/transcript, relevant facts, and
+warnings. The method accepts no `Attachment`, byte buffer, scratch URI, OAuth value,
+API credential, sender, recipient, subject, message/thread identifier, prior-thread
+body, or other Gmail metadata. OpenRouter sends its key only in the Authorization
+header and never in the JSON body. Gemini sends one text-only `generate_content`
+request; OpenRouter sends one non-streaming `/api/v1/chat/completions` request. Both
+set a 2,048 output-token ceiling and send no search tool, plugin, or provider fallback
+list in backlog item 07.
+
+The adapters treat provider prose and usage as untrusted. Empty or malformed success
+responses raise `reply_provider_invalid_response` with terminal classification.
+Timeouts, connection failures, HTTP `408`/`429`, and provider `5xx` failures raise
+`reply_provider_unavailable` with retryable classification; other provider `4xx`
+failures are terminal. Public exception text contains only the stable code and retry
+classification. A selected-provider failure is returned unchanged to the caller; no
+code path constructs, calls, or retries with the other reply provider.
 
 Advanced Option C is the only search mode. The application classifies explicit
 freshness needs (including current/latest/today facts, prices, schedules, current
@@ -422,6 +447,10 @@ call with only the provider-native tool: Gemini Google Search grounding or
 `openrouter:web_search`. There is at most one search-enabled response call and one
 reply-generation call total per processing attempt; no retry changes provider or
 adds a second search call.
+
+Backlog item 07 implements none of that search behavior: every reply request is the
+stable no-tool form and returns no citations. Backlog item 08 alone may extend the
+selected adapter with the provider-native tool and application-owned citation policy.
 
 The application URL-validates and canonicalizes citations, removes duplicates while
 preserving provider order, and retains at most five citations. It renders them
@@ -613,6 +642,11 @@ and deployment require explicit operator approval in issue 13.
   to Gemini; it has no Firestore, Pub/Sub, local-file, or OpenRouter write path.
   Cleanup observability contains only `attachment_cleanup_failed`, never an object
   name, filename, URI, media content, extracted text, transcript, fact, or warning.
+- Reply generation keeps current text, bounded insights, provider prose, and rendered
+  alternatives in request memory only. The OpenRouter request is constructed by an
+  allowlist and contains no original attachment bytes, scratch object URI, credential,
+  or unrelated Gmail metadata. Provider errors are sanitized before they cross the
+  adapter boundary, and neither request nor response content is logged.
 - HTTP responses are empty except the stable health payload and contain neither
   identifiers nor exception text. Metrics aggregate counts and latency without
   content labels.
@@ -667,6 +701,11 @@ Spec phase:
   for `threadId`, matching `Subject`, `In-Reply-To`, and `References`;
 - [Gemini 3.6 Flash](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash)
   for model modalities and `global` availability; and
+- [Google Gen AI SDK](https://googleapis.github.io/python-genai/) for asynchronous
+  generation, stable API selection, response text, usage metadata, and client
+  lifecycle;
+- [OpenRouter chat completions](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)
+  for bearer authentication, request messages, response text, and usage fields; and
 - [OpenRouter web search](https://openrouter.ai/docs/guides/features/server-tools/web-search)
   for the non-deprecated `openrouter:web_search` server tool.
 

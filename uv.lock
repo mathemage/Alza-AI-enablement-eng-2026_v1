@@ -12,12 +12,12 @@ dependencies = [
     { name = "google-auth-oauthlib" },
     { name = "google-cloud-storage" },
     { name = "google-genai" },
+    { name = "httpx" },
     { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -30,12 +30,12 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = "==1.4.0" },
     { name = "google-cloud-storage", specifier = "==3.13.1" },
     { name = "google-genai", specifier = "==2.18.1" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "uvicorn", specifier = "==0.52.3" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = "==0.28.1" },
     { name = "mypy", specifier = "==2.3.1" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.16.3" },
