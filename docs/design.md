@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 04. Later issues must update
+Status: frozen baseline updated through backlog item 05. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -14,8 +14,11 @@ The implementation baseline is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, 
 mypy, Docker, Terraform, and GitHub Actions. Application packages live under `src/`,
 tests under `tests/`, and `uv.lock` is committed. Backlog item 04 adds only the Gmail
 gateway boundary, its deterministic fake and mocked adapter tests, and the interactive
-operator OAuth bootstrap command. It does not activate a watch, access a live mailbox
-in default tests, upload a secret, deploy, or add frontend implementation.
+operator OAuth bootstrap command. Backlog item 05 adds only immutable email domain
+values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. It does not
+integrate parsing into the Gmail adapter or processing route, analyze or stage an
+attachment, activate a watch, access a live mailbox, deploy, or add frontend
+implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -160,8 +163,8 @@ only in request memory.
 
 | Model | Frozen fields and invariants |
 | --- | --- |
-| `InboundEmail` | Opaque mailbox key, Gmail message/thread IDs, RFC `Message-ID`, `Subject`, `From`, optional `Reply-To`, ordered `References`, received timestamp, normalized current-message text, tuple of `Attachment`, and warnings. It contains no prior thread bodies. |
-| `Attachment` | Gmail part ID, sanitized filename, canonical media family/type, disposition/content ID, decoded byte length, and decoded bytes. A value exists only after all MIME and size checks pass. |
+| `InboundEmail` | Opaque mailbox key, Gmail message/thread IDs, decoded RFC `Message-ID`, `Subject`, and `From`, optional decoded `Reply-To`, ordered `References`, UTC `internalDate` timestamp, normalized current-message text, tuple of `Attachment`, and bounded warning codes. It contains no prior thread bodies, and content-bearing fields are excluded from its representation. |
+| `Attachment` | Gmail part ID, sanitized filename, canonical document/audio/image family and MIME type, `attachment` or `inline` disposition, optional normalized content ID, decoded byte length, and immutable decoded bytes. A value exists only after all MIME and size checks pass; filename, content ID, and bytes are excluded from its representation. |
 | `AttachmentInsight` | Filename, media type, summary (maximum 2,000 characters), extracted text or transcript (maximum 16,000 characters), at most 20 relevant facts of 500 characters each, and at most 10 warnings of 500 characters each. |
 | `Citation` | Canonical HTTP(S) URL of at most 2,048 characters, title of at most 200 characters, and optional provider label. URLs have a valid public host and no credentials; equality uses the canonical URL. |
 | `GeneratedReply` | Plain text, application-rendered safe HTML, at most five `Citation` values, selected provider/model, bounded usage metadata held in memory, and provider/total latency. Plain text and rendered HTML are each limited to 8,000 characters. |
@@ -255,14 +258,61 @@ threading headers.
 
 ## MIME and attachment policy
 
-The parser is pure, recursive, deterministic, and performs no network I/O. It decodes
-encoded headers and strict base64url bodies, prefers `text/plain` inside
-`multipart/alternative`, and otherwise converts HTML locally to text without loading
-remote resources. Nested multiparts are traversed in wire order. HTML, filenames,
-and headers remain untrusted.
+`parse_inbound_email(mailbox_key, message, external_attachments=None)` accepts one
+Gmail `format=full` mapping plus an optional mapping of Gmail attachment IDs to bytes
+that were already retrieved by the caller. It returns one `InboundEmail`; it accepts
+no gateway, callback, file path, URL, or logger and performs no I/O. Inputs are never
+mutated. Repeated parsing of equal values produces equal frozen domain values. The
+mailbox key must be a non-empty string, every supplied external value must be `bytes`,
+and every classified attachment must have a non-empty Gmail part ID; violations are
+malformed input.
 
-A file-bearing or referenced inline part counts as an attachment. Decorative inline
-parts with no filename and no body reference may be ignored with a bounded warning.
+The top-level `id`, `threadId`, decimal epoch-millisecond `internalDate`, and `payload`
+are required. Payload headers are matched case-insensitively. Exactly one non-empty
+`Message-ID` and `From` is required. `Subject` is optional and defaults to an empty
+string, `Reply-To` is optional, and repeated `References` values are unfolded into
+message-ID tokens in wire order. Singleton headers may not be duplicated. RFC 2047
+encoded words are decoded before mapping. The timestamp is converted to timezone-aware
+UTC. A missing, duplicate, wrongly typed, or undecodable required value is malformed
+input.
+
+The parser recursively walks at most 50 Gmail `parts` levels in wire order; deeper
+input is malformed. `multipart/alternative`
+contributes the first usable `text/plain` descendant, or the first usable `text/html`
+descendant when no plain alternative exists; it never contributes both. Other nested
+multiparts contribute usable body fragments in wire order, joined by one newline.
+Text is decoded strictly with the declared charset (UTF-8 by default); an unknown
+charset or undecodable bytes are malformed. Line endings are normalized to `\n`,
+trailing horizontal whitespace is removed, and outer blank space is stripped. HTML
+is converted locally with the standard-library parser: tags,
+scripts, styles, comments, and remote-resource attributes are discarded, block
+boundaries become whitespace, and character references become text. No HTML URL is
+opened. URL-bearing attributes are discarded rather than injected into normalized
+text; malformed hidden-element nesting stays hidden, and a URL that is itself visible
+text remains message content. A message with no non-empty usable body is terminal.
+
+Inline Gmail `body.data` is decoded with the strict URL-safe base64 alphabet and
+canonical optional padding. An external `attachmentId` is resolved only from the
+supplied byte mapping; absent data is terminal. A body containing both representations
+is malformed, and the untrusted Gmail `body.size` never overrides the actual decoded
+length. Canonical base64url and external-data presence are validated even for an
+ignored part; candidate decoded length is computed before allocating inline decoded
+bytes. A part is an attachment when it has a non-empty filename, an `attachment`
+disposition, or a normalized content ID referenced by a case-insensitive `cid:` URI
+in any decoded HTML leaf. Such a part never also contributes body text. An inline
+non-text part with no filename or referenced content ID is ignored with the single
+warning code `mime_ignored_decorative_inline`. Warning codes are ordered,
+deduplicated, and limited to ten.
+
+Attachment filenames decode RFC 2047 words, treat `/` and `\\` as path separators,
+remove control characters, trim surrounding whitespace and dots, and are limited to
+255 characters. An empty result becomes `attachment`. Disposition and content ID come
+from each part's case-insensitive `Content-Disposition` and `Content-ID` headers.
+Content IDs have surrounding angle brackets and whitespace removed. Attachment
+disposition is canonicalized to `attachment` or `inline`; a CID-referenced part uses
+`inline`, and any other file-bearing part without an explicit disposition uses
+`attachment`.
+
 The allowed media families are:
 
 | Format | Accepted declared MIME types | Required content family |
@@ -273,18 +323,41 @@ The allowed media families are:
 | JPEG | `image/jpeg` | JPEG signature |
 | PNG | `image/png` | PNG signature |
 
-Declared type and detected family must agree. Unsupported file parts, mismatches,
-malformed base64url data, an unusable body, or an attachment exceeding a boundary are
-typed terminal outcomes; the parser never exposes partial decoded bytes. Ignored
-decorative parts and recoverable presentation defects become bounded warnings.
+`audio/x-wav` is normalized to `audio/wav`; every other output type is the declared
+type above. Declared MIME tokens are compared case-insensitively and normalized to
+lowercase. Families normalize to `document`, `audio`, or `image`. Signature predicates
+are exact: PDF starts with `%PDF-`; MP3 starts with `ID3` or has an MPEG frame sync
+whose first byte is `0xff` and whose second byte has its upper three bits set; WAV
+starts with `RIFF` and has `WAVE` at bytes 8 through 11; JPEG starts with
+`0xff 0xd8 0xff`; and PNG starts with `89 50 4e 47 0d 0a 1a 0a`. Declared type and
+detected family must agree. `MimeParseError` is the single typed terminal exception
+and exposes one stable sanitized `code`; its string contains only that code.
+Structural/header/timestamp/charset failures use `mime_malformed_message`, invalid
+inline base64url uses `mime_malformed_base64url`, absent external bytes uses
+`mime_missing_attachment_data`, no usable body uses `mime_missing_body`, an
+unsupported file part uses `mime_unsupported_attachment_type`, and a signature
+disagreement uses `mime_attachment_type_mismatch`. The parser never returns an
+`InboundEmail` or partial decoded attachment bytes after an error.
 
 Limits are inclusive: at most five attachments, at most `20 MiB` (`20 * 1024 * 1024`
 decoded bytes) per attachment, and at most `24 MiB` decoded across all attachments.
-They are enforced before staging or model calls. Each attachment is staged with an
+The sixth discovered attachment fails with `mime_too_many_attachments`; a decoded
+attachment above the per-file limit fails with `mime_attachment_too_large`; otherwise
+the first addition above the total fails with `mime_attachments_too_large`. Count,
+per-file, then running-total checks are applied in that order before content signatures
+and before any domain value is returned. They are enforced before staging or model
+calls. Each attachment is staged with an
 opaque name, sent in exactly one Gemini analysis request per processing attempt, and
 processed with concurrency `2`. All upload/model outcomes run deletion in `finally`;
 a deletion failure is sanitized and observable but does not replace the primary
 success or failure, and lifecycle deletion remains the backstop.
+
+For compound-invalid input the first violation is deterministic: validate the message
+shape, headers, part metadata, mailbox key, and external mapping types; decode
+non-file-bearing text needed for body selection and CID discovery; classify and count
+attachments; then, in attachment wire order, validate declared support, decode or
+resolve bytes, apply per-file and running-total limits, and check the signature;
+finally select the normalized body and require it to be non-empty.
 
 ## Provider and live-search policy
 

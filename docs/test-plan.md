@@ -145,6 +145,53 @@ After Refactor, run the focused command above and the complete existing suite wi
 `uv run pytest -q`, followed by Ruff formatting/linting and strict mypy. Every normal
 Gmail/OAuth test must use the fake or mock; any network attempt is a test defect.
 
+## Issue 05 executable contract
+
+The focused suite is `uv run pytest tests/test_mime.py -q`. Its first Red run occurs
+after this specification and the complete synthetic fixture matrix exist, but before
+`alza_ai.mime` exists. The expected failure identifies the absent pure parser contract,
+not a missing third-party package, credential, executable, file fixture, or network
+connection. The failing state is not committed.
+
+All fixtures are generated from owned ASCII labels and short synthetic byte prefixes;
+large boundary bodies are generated in memory and are not committed as binaries.
+The focused suite proves:
+
+- a plain body maps all reply-relevant Gmail IDs, UTC `internalDate`, RFC 2047 headers,
+  optional `Reply-To`, ordered `References`, normalized text, and immutable values;
+- HTML-only input is converted locally while a failing network sentinel observes zero
+  calls, a plain alternative is preferred, and adversarial nested mixed/alternative
+  parts preserve selected body-fragment wire order without duplicate alternatives;
+- padded and unpadded base64url are accepted, while invalid alphabet/padding, malformed
+  structures or required headers, missing external data, and an unusable body produce
+  only the specified sanitized `MimeParseError.code`; ignored-part base64url and MIME
+  nesting above 50 levels are equally terminal;
+- separate license-safe PDF, MP3 with ID3 and frame signatures, WAV, JPEG, and PNG
+  cases map to canonical attachment values; referenced inline media counts,
+  decorative inline media yields a bounded warning, and filenames are decoded and
+  sanitized; `audio/x-wav` canonicalizes to `audio/wav`, and a disposition-only file
+  counts;
+- each supported declared type rejects a different supported signature as
+  `mime_attachment_type_mismatch`, and a file-bearing unsupported type rejects as
+  `mime_unsupported_attachment_type` without returning bytes;
+- four and five attachments pass while six fail; `20 MiB - 1` and exactly `20 MiB`
+  pass while one byte more fails per-file; `24 MiB - 1` and exactly `24 MiB` pass
+  while one byte more fails in total. The size cases use supplied external byte
+  mappings so the test itself does not add base64 expansion or network I/O.
+- repeated parsing is equal and leaves its inputs unchanged; duplicate singleton
+  headers, unknown or undecodable charsets, empty mailbox keys, non-byte external
+  values, and attachment parts without IDs produce only the specified sanitized
+  malformed outcome. Content-bearing domain fields are absent from representations;
+  captured logs remain empty and contain no raw fixture marker.
+
+After Refactor, run the focused command above, the complete existing suite with
+`uv run pytest -q`, `uv run ruff format --check .`, `uv run ruff check .`, and
+`uv run mypy src tests`. Because issue 05 exposes no HTTP route, its live integration
+smoke starts the existing `uvicorn` entry point and verifies `GET /healthz`; parser
+behavior remains exhaustively unit-tested at its pure mapping boundary. Any network,
+filesystem, remote HTML, Gmail, cloud, or paid-provider access from the parser is a
+defect; the parser must emit no log record.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -157,11 +204,11 @@ Gmail/OAuth test must use the fake or mock; any network attempt is a test defect
 | Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The backlog item 04 CI gate runs Ruff formatting and linting, mypy, the complete
+The backlog item 05 CI gate runs Ruff formatting and linting, mypy, the complete
 currently available pytest suite, the container smoke check, the offline Terraform
-checks, and the mocked Gmail/OAuth contracts. The eventual complete CI gate will also
-run broader black-box integration tests and enforce at least **85% line coverage** as
-those layers are introduced.
+checks, and the mocked Gmail/OAuth plus pure MIME contracts. The eventual complete CI
+gate will also run broader black-box integration tests and enforce at least
+**85% line coverage** as those layers are introduced.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
 
