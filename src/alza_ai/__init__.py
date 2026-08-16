@@ -1,0 +1,1 @@
+"""Alza AI backend service."""
