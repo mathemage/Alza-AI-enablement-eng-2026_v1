@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - name: Install Python
+        run: uv python install 3.14
+      - name: Sync dependencies
+        run: uv sync --locked
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src tests
+      - name: Test
+        run: uv run pytest -q
+      - name: Build container
+        run: docker build --tag alza-ai:test .
+      - name: Smoke-test non-root container
+        run: |
+          image_user="$(docker image inspect alza-ai:test --format '{{.Config.User}}')"
+          test -n "$image_user"
+          test "$image_user" != "0"
+          test "$image_user" != "root"
+
+          container_id="$(docker run --detach --rm --publish 127.0.0.1:8080:8080 alza-ai:test)"
+          trap 'docker stop "$container_id"' EXIT
+
+          for _ in {1..30}; do
+            if response="$(curl --fail --silent --show-error http://127.0.0.1:8080/healthz)" \
+              && test "$response" = '{"status":"ok"}'; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          docker logs "$container_id"
+          exit 1

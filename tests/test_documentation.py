@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DESIGN = ROOT / "docs" / "design.md"
 TEST_PLAN = ROOT / "docs" / "test-plan.md"

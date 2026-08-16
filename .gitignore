@@ -148,7 +148,8 @@ activemq-data/
 *.sage.py
 
 # Environments
-.env
+.env*
+!.env.example
 .envrc
 .venv
 env/
@@ -208,6 +209,27 @@ tempCodeRunnerFile.py
 
 # PyPI configuration file
 .pypirc
+
+# Terraform local state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# Local credentials and tokens
+credentials/
+secrets/
+credentials*.json
+token*.json
+*.key
+*.pem
+
+# Generated evidence
+/evidence/
+/test-results/
 
 # Marimo
 marimo/_static/

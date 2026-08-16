@@ -24,6 +24,42 @@ Tests must not invent results, use production credentials in default runs, make 
 calls in CI, or retain raw message content in evidence. Expected Red output must
 identify the unmet behavior rather than an unrelated setup failure.
 
+## Issue 02 executable contract
+
+The focused test sends `GET /healthz` through FastAPI's ASGI boundary and requires all
+of the following:
+
+- status `200`;
+- content type `application/json`;
+- exact response bytes `{"status":"ok"}`.
+
+The route performs no downstream, cloud, or credential check. The expected Red run
+uses a valid FastAPI application with the route still absent, so the assertion sees
+`404` instead of `200`; an import or dependency failure is not acceptable evidence.
+
+Local and CI validation use these exact commands from a clean checkout:
+
+```text
+uv sync --locked
+uv run pytest tests/test_health.py -q
+uv run pytest -q
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+```
+
+The local black-box check starts the service with:
+
+```text
+uv run uvicorn alza_ai.main:app --host 0.0.0.0 --port 8080
+```
+
+and sends `curl --fail --silent --show-error http://127.0.0.1:8080/healthz`. The
+container gate builds the repository Dockerfile, asserts that its configured user is
+not root, starts it on port `8080`, and applies the same HTTP assertion. Playwright is
+not installed because this backlog item has no browser UI; live HTTP is the equivalent
+integration boundary.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -36,11 +72,12 @@ identify the unmet behavior rather than an unrelated setup failure.
 | Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The complete CI gate will run Ruff formatting and linting, mypy, unit, contract,
-Terraform, and black-box integration tests; build and smoke the container; and enforce
-at least **85% line coverage**. Normal tests mock Gmail, cloud, Gemini, OpenRouter, and
-search. Authenticated smoke and live Gmail tests are explicit operator-approved gates
-outside default CI.
+The backlog item 02 CI gate runs Ruff formatting and linting, mypy, the complete
+currently available pytest suite, and the container smoke check. The eventual
+complete CI gate will also run contract, Terraform, and broader black-box integration
+tests and enforce at least **85% line coverage** as those layers are introduced.
+Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
+live Gmail tests are explicit operator-approved gates outside default CI.
 
 ## Planned Red evidence
 

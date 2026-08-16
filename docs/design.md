@@ -1,7 +1,7 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline for backlog item 01. Later issues must update this document
-and `docs/test-plan.md` in their Spec phase before changing a decision.
+Status: frozen baseline updated through backlog item 02. Later issues must update
+this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
 
@@ -11,16 +11,45 @@ grounds time-sensitive answers with live search, and sends one concise reply in 
 original Gmail thread.
 
 The implementation baseline is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, Ruff,
-mypy, Docker, Terraform, and GitHub Actions. Application packages will live under
-`src/`, tests under `tests/`, and `uv.lock` will be committed. Backlog item 01 adds
-only these documents and their documentation-focused validation; it adds no
-application, cloud infrastructure, CI, or frontend implementation and does not alter
-the existing `.gitignore`.
+mypy, Docker, Terraform, and GitHub Actions. Application packages live under `src/`,
+tests under `tests/`, and `uv.lock` is committed. Backlog item 02 adds only the typed
+service/tooling foundation and liveness route. It adds no cloud integration or
+frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
 or background worker outside Cloud Run and Pub/Sub. Only the current source message,
 its supported attachments, and the minimum headers needed to reply are model input.
+
+### Service scaffold and commands
+
+The project requires Python `>=3.14,<3.15` and uses the committed `uv.lock` as the
+only dependency resolution input in local verification and CI. The importable
+application is `alza_ai.main:app`. FastAPI's OpenAPI, Swagger UI, and ReDoc routes are
+disabled so the scaffold does not expose endpoints outside the frozen HTTP surface.
+
+The exact local setup and verification commands for backlog item 02 are:
+
+```text
+uv sync --locked
+uv run pytest tests/test_health.py -q
+uv run pytest -q
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+```
+
+The local server command is:
+
+```text
+uv run uvicorn alza_ai.main:app --host 0.0.0.0 --port 8080
+```
+
+CI installs Python `3.14`, synchronizes with `uv sync --locked`, then runs the same
+Ruff format/check, mypy, and complete pytest commands. It builds the Dockerfile and
+smoke-checks the same application at `GET /healthz`. The image runs as an explicit
+non-root user, listens on port `8080`, and includes no development dependency or
+credential.
 
 ## System flow and data ownership
 
@@ -111,6 +140,12 @@ validation; handlers additionally bind the configured caller identity to the exp
 route. Terraform grants `roles/run.invoker` only to the three logical invoker
 identities and an explicitly selected smoke identity. The runtime identity is not a
 public invoker.
+
+At the application boundary, `GET /healthz` performs no cloud, credential, or
+downstream dependency check. A successful response has status `200`, content type
+`application/json`, and the exact UTF-8 body `{"status":"ok"}`. Deployment-level IAM
+remains responsible for authenticating the caller; the local ASGI route itself adds
+no alternate authentication behavior.
 
 For Pub/Sub, any `2xx` is an acknowledgment and a non-`2xx` requests redelivery.
 Poison envelopes that cannot identify a source message are acknowledged after a
@@ -456,6 +491,7 @@ complete suites finish Green, and its PR records exact sanitized evidence.
 
 Default tests use deterministic fakes and mocked providers. The final black-box layer
 runs against `uvicorn` over public HTTP routes and is the Playwright-equivalent test
-for this UI-free service. Terraform apply, OAuth mutation, authenticated cloud smoke,
-and five live Gmail cases are explicit opt-in gates. The service is deployed and left
-running only in issue 13; issue 01 intentionally has no server to run.
+for this UI-free service. Backlog item 02 verifies liveness both through the ASGI test
+boundary and a running local/container process. Terraform apply, OAuth mutation,
+authenticated cloud smoke, and five live Gmail cases are explicit opt-in gates. The
+service is deployed and left running only in issue 13.
