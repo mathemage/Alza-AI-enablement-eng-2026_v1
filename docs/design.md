@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 02. Later issues must update
+Status: frozen baseline updated through backlog item 03. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -12,9 +12,9 @@ original Gmail thread.
 
 The implementation baseline is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, Ruff,
 mypy, Docker, Terraform, and GitHub Actions. Application packages live under `src/`,
-tests under `tests/`, and `uv.lock` is committed. Backlog item 02 adds only the typed
-service/tooling foundation and liveness route. It adds no cloud integration or
-frontend implementation.
+tests under `tests/`, and `uv.lock` is committed. Backlog item 03 adds only tested GCP
+configuration and its credential-free CI gate. It does not apply, deploy, add secret
+versions, call cloud APIs, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -376,41 +376,70 @@ need dead-letter delivery.
 
 ## Regional infrastructure and IAM
 
-All proximity-oriented workload resources are in `europe-west3` (Frankfurt): one
-private Cloud Run service, regional Firestore in Native mode, scratch Cloud Storage,
-Artifact Registry, both Cloud Scheduler jobs, and user-managed Secret Manager
-replicas. This is a Prague-proximity choice, not a measured latency guarantee. Gemini
-uses its `global` endpoint and is the explicit regional exception. Pub/Sub topics are
-global resources with a message-storage policy restricted to `europe-west3`.
+The single root module is `infra/`. It requires Terraform `1.15.8`, pins the Google
+provider and dependency lock to `7.44.0`, and intentionally declares no remote
+backend. All proximity-oriented workload resources use `europe-west3` (Frankfurt):
+one private Cloud Run service, Firestore in Native mode, one scratch Cloud Storage
+bucket, one Docker Artifact Registry repository, both Cloud Scheduler jobs, and every
+user-managed Secret Manager replica. This is a Prague-proximity choice, not a
+measured latency guarantee. Gemini uses its `global` endpoint and is the explicit
+regional exception. Pub/Sub topics are global resources whose message-storage policy
+allows persistence only in `europe-west3`.
 
-The Cloud Run service uses internal ingress, IAM-only invocation, zero minimum
-instances, maximum instances `2`, container concurrency `1`, one vCPU, 1 GiB memory,
-and a `115s` request timeout. Authenticated smoke originates from an authorized
-same-project/internal execution context because ingress is not opened for testing.
+Terraform enables only `run`, `artifactregistry`, `firestore`, `storage`,
+`secretmanager`, `pubsub`, `cloudscheduler`, `billingbudgets`, `aiplatform`,
+`iam`, `iamcredentials`, `logging`, and `monitoring` APIs. The module defines this
+exact inventory:
 
-Terraform enables only APIs required by the backlog and defines:
+- one `alza-ai` Cloud Run service using an operator-supplied immutable image;
+- one `alza-ai` Docker repository, one `(default)` Native Firestore database, and one
+  operator-named scratch bucket;
+- secret containers `gmail-oauth-client`, `gmail-refresh-token`, and
+  `openrouter-api-key`, each with one user-managed `europe-west3` replica and no
+  Terraform-managed version or payload;
+- `gmail-notifications` -> push subscription `gmail-notifications-push` and
+  `email-work` -> push subscription `email-work-push`;
+- shared topic `dead-letter` -> pull subscription `dead-letter-monitor`;
+- Scheduler jobs `renew-watch` at `0 3 * * *` UTC and `reconcile-unread` at
+  `*/5 * * * *` UTC;
+- one project-scoped monthly billing budget and bounded application quota inputs.
 
-- `gmail-notifications` -> `gmail-notifications-push`;
-- `email-work` -> `email-work-push`;
-- shared `dead-letter` -> pull `dead-letter-monitor`;
-- daily watch-renewal and five-minute reconciliation Scheduler jobs;
-- regional secret containers without versions or payloads;
-- budget alerts, application quota inputs, and the bounded Cloud Run configuration.
+The Cloud Run service uses `INGRESS_TRAFFIC_INTERNAL_ONLY`, IAM invocation, zero
+minimum instances, configurable maximum instances no greater than `2`, container
+concurrency `1`, one vCPU, 1 GiB memory, and a `115s` request timeout. Authenticated
+smoke originates from an authorized same-project/internal execution context because
+ingress is not opened for testing. Both primary subscriptions retain messages for
+seven days, acknowledge within `120s`, retry from `10s` to `600s`, and forward after
+`5` delivery attempts to the shared dead-letter topic. The dead-letter monitor also
+retains messages for seven days.
 
-There are distinct service accounts for the Cloud Run runtime,
-`gmail-notifications-push`, `email-work-push`, Scheduler invocation, and authenticated
-smoke. Each invoker gets only `roles/run.invoker` on this service; Pub/Sub's service
-agent gets only the token/dead-letter permissions required for authenticated push.
-The runtime gets Firestore access, object access only on the scratch bucket, publish
-access only on `email-work`, access only to named secrets, Gemini invocation, and
-logging/metrics permissions. Scheduler has no runtime data permissions.
-`gmail-api-push@system.gserviceaccount.com` receives publisher access only on
-`gmail-notifications`.
+IAM grants use additive member resources and the narrowest available scope:
 
-Terraform runs in CI only through `terraform fmt -check -recursive`,
-`terraform init -backend=false`, `terraform validate`, and mocked-provider
-`terraform test`. CI never runs `terraform apply`; project selection, apply, secret
-versions, OAuth, and deployment require explicit operator approval in issue 13.
+| Identity | Grants |
+| --- | --- |
+| Cloud Run runtime | Project `roles/datastore.user`, `roles/aiplatform.user`, `roles/logging.logWriter`, and `roles/monitoring.metricWriter`; bucket-only `roles/storage.objectUser`; topic-only `roles/pubsub.publisher` on `email-work`; secret-only `roles/secretmanager.secretAccessor` on the three named containers. |
+| `gmail-notifications-push`, `email-work-push`, Scheduler invoker, authenticated smoke | Service-only `roles/run.invoker`; no runtime data roles. |
+| Pub/Sub service agent | Token creation only on the two push identities, publisher only on `dead-letter`, and subscriber only on the two primary subscriptions. |
+| `gmail-api-push@system.gserviceaccount.com` | Topic-only `roles/pubsub.publisher` on `gmail-notifications`. |
+
+The push subscriptions use their dedicated identities to mint OIDC tokens. Both
+Scheduler jobs use the Scheduler identity. Every token audience is the exact Cloud
+Run service URI, and each target is that URI plus its frozen route. There is no
+`allUsers` or `allAuthenticatedUsers` binding. The deployment principal's temporary
+`actAs` authority is an operator prerequisite, not a runtime grant managed here.
+
+Terraform runs locally and in CI only through:
+
+```text
+terraform fmt -check -recursive
+terraform -chdir=infra init -backend=false
+terraform -chdir=infra validate
+terraform -chdir=infra test
+```
+
+Tests use `mock_provider "google"` and require no GCP credentials or billable calls.
+CI never runs plan or apply. Project/billing selection, apply, secret versions, OAuth,
+and deployment require explicit operator approval in issue 13.
 
 ## Security, privacy, and observability
 
@@ -457,7 +486,13 @@ remaining budget cannot finish safely and returns a retryable outcome. Live
 acceptance measures end-to-end delivery against `120s`; that is an acceptance target,
 not the per-request timeout.
 
-Budget thresholds and recipients are explicit Terraform inputs. Alerts report
+The Terraform inputs permit only lower or equal application ceilings: at most five
+attachment-analysis calls, one reply-generation call, one search-enabled call, and
+2,048 output tokens per message. They are injected as non-secret Cloud Run settings.
+The maximum-instance input is similarly limited to `1..2`; the default is `2`.
+
+The billing account, project number, monthly amount, currency, alert thresholds, and
+Monitoring notification-channel IDs are explicit Terraform inputs. Alerts report
 spending at configured thresholds but do not hard-cap or prevent charges. Maximum
 instances, application call/output limits, provider quotas, and an operator stop
 procedure are the actual exposure controls.
