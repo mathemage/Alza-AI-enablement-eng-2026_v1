@@ -15,6 +15,16 @@ class Attachment:
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentInsight:
+    filename: str = field(repr=False)
+    media_type: str
+    summary: str = field(repr=False)
+    extracted_text: str = field(repr=False)
+    relevant_facts: tuple[str, ...] = field(repr=False)
+    warnings: tuple[str, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class InboundEmail:
     mailbox_key: str
     message_id: str

@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 05. Later issues must update
+Status: frozen baseline updated through backlog item 06. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -15,10 +15,11 @@ mypy, Docker, Terraform, and GitHub Actions. Application packages live under `sr
 tests under `tests/`, and `uv.lock` is committed. Backlog item 04 adds only the Gmail
 gateway boundary, its deterministic fake and mocked adapter tests, and the interactive
 operator OAuth bootstrap command. Backlog item 05 adds only immutable email domain
-values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. It does not
-integrate parsing into the Gmail adapter or processing route, analyze or stage an
-attachment, activate a watch, access a live mailbox, deploy, or add frontend
-implementation.
+values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. Backlog item
+06 adds only bounded attachment insights, regional scratch-storage and Gemini
+multimodal adapters, and the asynchronous attachment analyzer. It does not integrate
+parsing or analysis into a processing route, generate a reply, activate a watch,
+access a live mailbox, deploy, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -165,7 +166,7 @@ only in request memory.
 | --- | --- |
 | `InboundEmail` | Opaque mailbox key, Gmail message/thread IDs, decoded RFC `Message-ID`, `Subject`, and `From`, optional decoded `Reply-To`, ordered `References`, UTC `internalDate` timestamp, normalized current-message text, tuple of `Attachment`, and bounded warning codes. It contains no prior thread bodies, and content-bearing fields are excluded from its representation. |
 | `Attachment` | Gmail part ID, sanitized filename, canonical document/audio/image family and MIME type, `attachment` or `inline` disposition, optional normalized content ID, decoded byte length, and immutable decoded bytes. A value exists only after all MIME and size checks pass; filename, content ID, and bytes are excluded from its representation. |
-| `AttachmentInsight` | Filename, media type, summary (maximum 2,000 characters), extracted text or transcript (maximum 16,000 characters), at most 20 relevant facts of 500 characters each, and at most 10 warnings of 500 characters each. |
+| `AttachmentInsight` | Original sanitized filename and canonical media type copied from `Attachment`, a trimmed summary (maximum 2,000 characters), trimmed extracted text or transcript (maximum 16,000 characters), at most 20 trimmed relevant facts of 500 characters each, and at most 10 trimmed warnings of 500 characters each. Empty fact/warning entries are discarded. Content-bearing fields are excluded from its representation. |
 | `Citation` | Canonical HTTP(S) URL of at most 2,048 characters, title of at most 200 characters, and optional provider label. URLs have a valid public host and no credentials; equality uses the canonical URL. |
 | `GeneratedReply` | Plain text, application-rendered safe HTML, at most five `Citation` values, selected provider/model, bounded usage metadata held in memory, and provider/total latency. Plain text and rendered HTML are each limited to 8,000 characters. |
 
@@ -181,7 +182,7 @@ before real adapters.
 | Interface | Required operations and contract |
 | --- | --- |
 | `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
-| `AttachmentAnalyzer` | Analyze one validated `Attachment` into one bounded `AttachmentInsight`. The coordinator invokes it once per attachment per processing attempt and limits total analysis concurrency to `2`. |
+| `AttachmentAnalyzer` | Analyze an ordered sequence of validated `Attachment` values into ordered bounded `AttachmentInsight` values. It owns staging, one Gemini call per successfully staged attachment, concurrency `2`, timeout normalization, and unconditional scratch deletion. An ordinary partial failure completes every attachment job and then raises the first sanitized error in input order; it never returns partial insights. |
 | `ReplyProvider` | Generate one `GeneratedReply` from current normalized text, bounded insights, reply headers, and a search policy. Gemini and OpenRouter obey one shared contract and expose typed retry classification. |
 | `WorkPublisher` | Publish one versioned metadata-only work item with a deterministic work key used by the consumer for idempotency, and return only after Pub/Sub accepts it. Pub/Sub delivery itself remains at-least-once; batch success is all-or-cursor-does-not-advance. |
 | `ProcessingStore` | Transactionally own mailbox sync/cursors and per-message claims, leases, attempt counts, state transitions, deterministic outbound IDs, reconciliation checkpoints, and sanitized failures. It accepts no content-bearing domain value. |
@@ -346,11 +347,7 @@ attachment above the per-file limit fails with `mime_attachment_too_large`; othe
 the first addition above the total fails with `mime_attachments_too_large`. Count,
 per-file, then running-total checks are applied in that order before content signatures
 and before any domain value is returned. They are enforced before staging or model
-calls. Each attachment is staged with an
-opaque name, sent in exactly one Gemini analysis request per processing attempt, and
-processed with concurrency `2`. All upload/model outcomes run deletion in `finally`;
-a deletion failure is sanitized and observable but does not replace the primary
-success or failure, and lifecycle deletion remains the backstop.
+calls.
 
 For compound-invalid input the first violation is deterministic: validate the message
 shape, headers, part metadata, mailbox key, and external mapping types; decode
@@ -358,6 +355,45 @@ non-file-bearing text needed for body selection and CID discovery; classify and 
 attachments; then, in attachment wire order, validate declared support, decode or
 resolve bytes, apply per-file and running-total limits, and check the signature;
 finally select the normalized body and require it to be non-empty.
+
+### Attachment analysis and scratch cleanup
+
+`AttachmentAnalyzer.analyze(attachments)` preserves input order and runs at most two
+complete attachment jobs concurrently. Each job generates a fresh 32-character
+lowercase hexadecimal object name with no filename, message identifier, extension, or
+other source metadata. The injected scratch adapter must identify its region as
+exactly `europe-west3`; the Cloud Storage adapter writes the immutable attachment bytes
+with their canonical media type to the configured Terraform-managed scratch bucket
+and returns only `gs://<bucket>/<opaque-name>`.
+
+After a successful upload, the Gemini adapter makes exactly one `generate_content`
+request using the configured Gemini model at the `global` Vertex AI endpoint. The
+request contains one GCS `file_data` part with the canonical media type and one
+application-owned analysis instruction. It never contains inline attachment bytes,
+the original filename, mailbox/message identifiers, prior thread content, or an
+OpenRouter request. Structured JSON output contains only `summary`, `extracted_text`,
+`relevant_facts`, and `warnings`; the analyzer copies filename/media type from the
+validated attachment, trims strings, removes empty list entries, and enforces the
+`AttachmentInsight` bounds even when provider output exceeds them.
+
+Upload plus Gemini analysis has a `30s` per-attachment timeout. Timeout, upload, model,
+and malformed-model outcomes surface respectively as sanitized
+`attachment_analysis_timeout`, `attachment_upload_failed`,
+`attachment_model_failed`, and `attachment_model_invalid_response` codes with no
+vendor message or content. Ordinary failures do not cancel sibling jobs: every
+successfully staged sibling still receives its one Gemini request, all jobs execute
+cleanup, and the first error in input order is raised after completion. Caller
+cancellation cancels unfinished jobs, waits for their cleanup attempts, and preserves
+`CancelledError` rather than translating it.
+
+Every job calls deletion in `finally` using the already allocated opaque name,
+including when upload partially fails, Gemini fails, times out, or is cancelled.
+Cleanup has its own `5s` bound outside the analysis timeout. A delete exception or
+cleanup timeout emits only the sanitized `attachment_cleanup_failed` warning event;
+on success it is also prepended to that insight's bounded warnings. Cleanup failure
+never replaces a successful insight, an analysis error, timeout, or cancellation.
+The bucket's one-day lifecycle remains only a safety net for objects that normal
+deletion could not remove.
 
 ## Provider and live-search policy
 
@@ -572,6 +608,11 @@ and deployment require explicit operator approval in issue 13.
   sanitized error code, and per-stage/total milliseconds. Addresses, subjects,
   bodies, prompts, replies, `AttachmentInsight` values, filenames, media bytes,
   OAuth/access/API tokens, secret values, and token counts are forbidden.
+- Attachment analysis keeps bytes and provider output only in request memory. It
+  writes bytes only to the regional scratch object and sends only its opaque GCS URI
+  to Gemini; it has no Firestore, Pub/Sub, local-file, or OpenRouter write path.
+  Cleanup observability contains only `attachment_cleanup_failed`, never an object
+  name, filename, URI, media content, extracted text, transcript, fact, or warning.
 - HTTP responses are empty except the stable health payload and contain neither
   identifiers nor exception text. Metrics aggregate counts and latency without
   content labels.
@@ -584,8 +625,10 @@ storage, Pub/Sub, Firestore, logging, and OpenRouter when selected can consume c
 or incur charges.
 
 One message is bounded to five attachment-analysis calls and one reply-generation
-call. Attachment concurrency is `2`; reply output is at most 2,048 model tokens and
-8,000 rendered characters; search uses at most one enabled call and five citations.
+call. Attachment concurrency is `2`; each attachment upload/model job has a `30s`
+timeout followed by a separately bounded `5s` cleanup attempt; reply output is at
+most 2,048 model tokens and 8,000 rendered characters; search uses at most one enabled
+call and five citations.
 Reconciliation, retries, attempts, message sizes, and retention are bounded as stated
 above. Configured provider/project quotas may lower these ceilings but never raise the
 application limits without a Spec change.

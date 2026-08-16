@@ -192,6 +192,50 @@ behavior remains exhaustively unit-tested at its pure mapping boundary. Any netw
 filesystem, remote HTML, Gmail, cloud, or paid-provider access from the parser is a
 defect; the parser must emit no log record.
 
+## Issue 06 executable contract
+
+The focused suite is `uv run pytest tests/test_attachments.py -q`. Its first Red run
+occurs after this specification and the full fake-adapter contract exists, but before
+`alza_ai.attachments` exists. The expected failure is
+`ModuleNotFoundError: No module named 'alza_ai.attachments'`; a missing SDK,
+credential, executable, network connection, or unrelated test defect is not acceptable
+Red evidence. The failing state is not committed.
+
+Deterministic asynchronous fake scratch-storage and Gemini adapters prove:
+
+- PDF, MP3, WAV, JPEG, and PNG bytes are uploaded once with their canonical media
+  type under unique 32-character lowercase hexadecimal names, all to a scratch adapter
+  fixed to `europe-west3`; original filenames and identifiers never enter object names;
+- each successful upload supplies one opaque `gs://` URI and media type to exactly one
+  Gemini call with no inline bytes, output order matches attachment order, and five
+  attachment jobs never exceed concurrency `2`;
+- summaries are limited to 2,000 characters, extracted text/transcripts to 16,000,
+  facts to 20 entries of 500, and warnings to 10 entries of 500; fields are trimmed,
+  empty list entries are removed, values are frozen/provider-neutral, and content is
+  absent from representations and captured logs;
+- an ordinary partial model failure allows every sibling job to finish, cleans every
+  allocated object, returns no partial tuple, and raises the first sanitized error in
+  input order; upload failure skips its Gemini call but still attempts deletion;
+- the `30s` upload/model timeout maps to `attachment_analysis_timeout`; caller
+  cancellation remains `CancelledError`; both wait for `finally` deletion attempts;
+- deletion failure and the separate `5s` cleanup timeout emit only
+  `attachment_cleanup_failed`, add that bounded warning to a successful insight, and
+  never mask upload/model/timeout/cancellation behavior.
+
+The same suite runs the Cloud Storage and Google Gen AI adapters against in-process
+mock clients. It requires an upload with content type and explicit SDK timeout, delete
+by the same opaque name, one Gemini `generate_content` call containing a GCS URI part
+and the fixed JSON schema, stable `v1`/`global` configuration, and sanitized malformed
+response handling. Normal tests make no GCP, Gemini, OpenRouter, filesystem, or paid
+call. The already-tested Terraform bucket location and one-day lifecycle remain
+unchanged and are rerun as an offline integration gate.
+
+After Refactor, run the focused command, the complete suite with `uv run pytest -q`,
+`uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src tests`.
+Because issue 06 exposes no new HTTP route, its live integration smoke starts the
+existing `uvicorn` entry point and verifies `GET /healthz`; the fake adapters are the
+executable attachment boundary.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
