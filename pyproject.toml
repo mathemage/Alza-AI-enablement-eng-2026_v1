@@ -5,8 +5,13 @@ description = "Backend service for the Alza AI enablement project"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "fastapi==0.141.1",
+    "google-api-python-client==2.198.0",
+    "google-auth-oauthlib==1.4.0",
     "uvicorn==0.52.3",
 ]
+
+[project.scripts]
+alza-ai = "alza_ai.cli:main"
 
 [dependency-groups]
 dev = [
