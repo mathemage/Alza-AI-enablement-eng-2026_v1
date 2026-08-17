@@ -220,6 +220,29 @@ run "GCP_02_builds_bounded_authenticated_message_paths" {
   }
 }
 
+run "FAIL_03_forwards_exhausted_deliveries_to_the_shared_monitor" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for subscription in values(google_pubsub_subscription.primary) : alltrue([
+        subscription.dead_letter_policy[0].max_delivery_attempts == 5,
+        subscription.dead_letter_policy[0].dead_letter_topic == google_pubsub_topic.messaging["dead-letter"].id,
+      ])
+    ])
+    error_message = "Both unacknowledged primary paths must forward after five attempts."
+  }
+
+  assert {
+    condition = alltrue([
+      google_pubsub_subscription.dead_letter_monitor.topic == google_pubsub_topic.messaging["dead-letter"].id,
+      google_pubsub_subscription.dead_letter_monitor.message_retention_duration == "604800s",
+      length(google_pubsub_subscription.dead_letter_monitor.push_config) == 0,
+    ])
+    error_message = "Exhausted deliveries must remain observable in the seven-day pull monitor."
+  }
+}
+
 run "GCP_02_authenticates_scheduler_paths" {
   command = plan
 

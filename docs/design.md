@@ -639,6 +639,15 @@ retry is limited to two total attempts with full jitter for idempotent metadata 
 and storage operations. Model generation/analysis is called once per processing
 attempt, and Gmail send is never blindly retried.
 
+The shared in-request retry helper makes one initial call and at most one retry. Its
+single backoff is full jitter in the inclusive range `0..250ms`. Message retrieval,
+attachment retrieval, thread inspection, and scratch-object stage/delete use it;
+provider/model calls, Gmail send, label mutation, and state transitions do not. A
+retry is skipped when its sampled delay cannot fit the coordinator's remaining
+deadline budget. Pub/Sub remains the only dead-letter owner: after five delivery
+attempts it forwards an unacknowledged item to the shared seven-day
+`dead-letter-monitor` path.
+
 Terminal classes are malformed or unsupported MIME, type/signature mismatch, size or
 count violation, unusable body, sender/loop policy rejection, unsafe irreparable
 provider output, and retry-budget exhaustion. They use sanitized stable codes only.

@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 
 from alza_ai.domain import Attachment, AttachmentInsight
+from alza_ai.retries import BoundedRetry
 
 REGION = "europe-west3"
 DEFAULT_MODEL = "gemini-3.6-flash"
@@ -284,6 +285,7 @@ class CloudStorageScratchStorage:
         bucket_name: str,
         client: object | None = None,
         request_timeout_seconds: float = 10.0,
+        retry: BoundedRetry | None = None,
     ) -> None:
         self.bucket_name = bucket_name
         storage_client = cast(
@@ -292,23 +294,43 @@ class CloudStorageScratchStorage:
         )
         self._bucket = storage_client.bucket(bucket_name)
         self._request_timeout_seconds = request_timeout_seconds
+        self._retry = retry or BoundedRetry()
 
     async def stage(self, *, object_name: str, data: bytes, media_type: str) -> str:
         blob = self._bucket.blob(object_name)
-        await asyncio.to_thread(
-            blob.upload_from_string,
-            data,
-            content_type=media_type,
-            timeout=self._request_timeout_seconds,
+
+        async def upload() -> None:
+            await asyncio.to_thread(
+                blob.upload_from_string,
+                data,
+                content_type=media_type,
+                timeout=self._request_timeout_seconds,
+            )
+
+        await self._retry.run(
+            upload,
+            retry_if=_retry_storage_error,
         )
         return f"gs://{self.bucket_name}/{object_name}"
 
     async def delete(self, *, object_name: str) -> None:
         blob = self._bucket.blob(object_name)
-        await asyncio.to_thread(
-            blob.delete,
-            timeout=self._request_timeout_seconds,
+
+        async def delete_blob() -> None:
+            await asyncio.to_thread(
+                blob.delete,
+                timeout=self._request_timeout_seconds,
+            )
+
+        await self._retry.run(
+            delete_blob,
+            retry_if=_retry_storage_error,
         )
+
+
+def _retry_storage_error(error: Exception) -> bool:
+    del error
+    return True
 
 
 class _GeminiResponse(Protocol):

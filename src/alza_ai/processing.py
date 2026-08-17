@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from enum import StrEnum
+from functools import partial
 from time import monotonic
 from typing import Protocol, TypeVar, cast
 from uuid import uuid4
@@ -34,6 +35,7 @@ from alza_ai.reply_providers import (
     ReplyProviderError,
     RetryClassification,
 )
+from alza_ai.retries import BoundedRetry, RetryBudgetExceeded
 
 PROCESSING_LEASE_SECONDS = 120
 MAX_PROCESSING_ATTEMPTS = 5
@@ -473,6 +475,7 @@ class MessageCoordinator:
         telemetry: Callable[[Mapping[str, object]], None] | None = _log_telemetry,
         monotonic: Callable[[], float] = monotonic,
         deadline_seconds: float = PROCESSING_DEADLINE_SECONDS,
+        retry: BoundedRetry | None = None,
     ) -> None:
         if not 0 < deadline_seconds <= PROCESSING_DEADLINE_SECONDS:
             raise ValueError("invalid processing deadline")
@@ -487,6 +490,7 @@ class MessageCoordinator:
         self._telemetry = telemetry
         self._monotonic = monotonic
         self._deadline_seconds = deadline_seconds
+        self._bounded_retry = retry or BoundedRetry()
 
     async def process(self, work: WorkItem) -> ProcessResult:
         started = self._monotonic()
@@ -543,14 +547,14 @@ class MessageCoordinator:
             self._set_failure(trace, "processing_lease_active", retryable=True)
             return ProcessResult.RETRY
         if claim.disposition is ClaimDisposition.EXHAUSTED:
-            return self._finish_exhausted(work, claim, owner, trace)
+            return await self._finish_exhausted(work, claim, owner, trace)
 
         send_may_have_happened = claim.state is ProcessingState.SEND_PENDING
         try:
             if claim.state is ProcessingState.SENT:
                 return self._finish_success(work, claim.record_id, owner, trace)
             if claim.state is ProcessingState.SEND_PENDING:
-                sent_message_id = self._inspect_for_reply(work, claim, trace)
+                sent_message_id = await self._inspect_for_reply(work, claim, trace)
                 if sent_message_id is not None:
                     self._check_deadline(trace)
                     self._store.mark_sent(
@@ -561,7 +565,7 @@ class MessageCoordinator:
                     trace.state = ProcessingState.SENT
                     return self._finish_success(work, claim.record_id, owner, trace)
 
-            inbound = self._load_inbound(work, trace)
+            inbound = await self._load_inbound(work, trace)
             if self._sender_policy is not None:
                 rejection_code = self._sender_policy.rejection_code(inbound)
                 if rejection_code is not None:
@@ -634,7 +638,9 @@ class MessageCoordinator:
                     thread_id=inbound.thread_id,
                     outbound_message_id=outbound_message_id,
                 )
-                sent_message_id = self._inspect_for_reply(work, recovery_claim, trace)
+                sent_message_id = await self._inspect_for_reply(
+                    work, recovery_claim, trace
+                )
                 if sent_message_id is not None:
                     self._check_deadline(trace)
                     self._store.mark_sent(
@@ -692,18 +698,22 @@ class MessageCoordinator:
             self._set_failure(trace, "processing_store_unavailable", retryable=True)
             return ProcessResult.RETRY
 
-    def _load_inbound(
+    async def _load_inbound(
         self,
         work: WorkItem,
         trace: _ProcessingTrace,
     ) -> InboundEmail:
         self._check_deadline(trace)
         started = self._monotonic()
-        message = self._gmail.get_message(work.message_id)
-        attachments = {
-            attachment_id: self._gmail.get_attachment(work.message_id, attachment_id)
-            for attachment_id in _external_attachment_ids(message)
-        }
+        message = await self._gmail_read(
+            lambda: self._gmail.get_message(work.message_id), trace
+        )
+        attachments: dict[str, bytes] = {}
+        for attachment_id in _external_attachment_ids(message):
+            attachments[attachment_id] = await self._gmail_read(
+                partial(self._gmail.get_attachment, work.message_id, attachment_id),
+                trace,
+            )
         inbound = self._parser(work.mailbox_key, message, attachments)
         self._emit_stage(trace, "gmail_fetch", started)
         self._check_deadline(trace)
@@ -714,7 +724,7 @@ class MessageCoordinator:
             raise _TerminalProcessingError("processing_source_mismatch")
         return inbound
 
-    def _inspect_for_reply(
+    async def _inspect_for_reply(
         self,
         work: WorkItem,
         claim: ProcessingClaim,
@@ -727,11 +737,14 @@ class MessageCoordinator:
             work.mailbox_key, work.message_id
         ):
             raise ProcessingStoreError("processing_record_invalid")
+        thread_id = claim.thread_id
         started = self._monotonic()
-        thread = self._gmail.inspect_thread(claim.thread_id)
+        thread = await self._gmail_read(
+            lambda: self._gmail.inspect_thread(thread_id), trace
+        )
         self._emit_stage(trace, "thread_inspection", started)
         self._check_deadline(trace)
-        if thread.thread_id != claim.thread_id:
+        if thread.thread_id != thread_id:
             raise GmailRetryableError("gmail_invalid_response")
         for message in thread.messages:
             if (
@@ -774,7 +787,7 @@ class MessageCoordinator:
         trace.state = ProcessingState.COMPLETED
         return ProcessResult.ACK
 
-    def _finish_exhausted(
+    async def _finish_exhausted(
         self,
         work: WorkItem,
         claim: ProcessingClaim,
@@ -783,7 +796,7 @@ class MessageCoordinator:
     ) -> ProcessResult:
         if claim.state is ProcessingState.SEND_PENDING:
             try:
-                sent_message_id = self._inspect_for_reply(work, claim, trace)
+                sent_message_id = await self._inspect_for_reply(work, claim, trace)
                 if sent_message_id is not None:
                     self._check_deadline(trace)
                     self._store.mark_sent(
@@ -860,6 +873,23 @@ class MessageCoordinator:
     def _check_deadline(self, trace: _ProcessingTrace) -> None:
         if self._monotonic() >= trace.deadline:
             raise _ProcessingDeadlineExceeded
+
+    async def _gmail_read[T](
+        self,
+        operation: Callable[[], T],
+        trace: _ProcessingTrace,
+    ) -> T:
+        async def invoke() -> T:
+            return operation()
+
+        try:
+            return await self._bounded_retry.run(
+                invoke,
+                retry_if=lambda error: isinstance(error, GmailRetryableError),
+                remaining_seconds=lambda: self._remaining(trace),
+            )
+        except RetryBudgetExceeded:
+            raise _ProcessingDeadlineExceeded from None
 
     def _remaining(self, trace: _ProcessingTrace) -> float:
         remaining = trace.deadline - self._monotonic()

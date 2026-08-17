@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import json
 import logging
 import re
@@ -564,6 +565,64 @@ def test_port_01_cloud_storage_adapter_uploads_and_deletes_with_explicit_timeout
     blob = client.mock_bucket.blobs[object_name]
     assert blob.uploads == [(data, "application/pdf", 7.0)]
     assert blob.delete_timeouts == [7.0]
+
+
+def test_fail_03_scratch_storage_retries_stage_and_delete_once_with_jitter() -> None:
+    retry_module = importlib.import_module("alza_ai.retries")
+    client = MockStorageClient()
+    object_name = "c" * 32
+    delays: list[float] = []
+
+    class FlakyBlob(MockBlob):
+        def upload_from_string(
+            self,
+            data: bytes,
+            *,
+            content_type: str,
+            timeout: float,
+        ) -> None:
+            super().upload_from_string(
+                data,
+                content_type=content_type,
+                timeout=timeout,
+            )
+            if len(self.uploads) == 1:
+                raise ConnectionError(PRIVATE_MARKER)
+
+        def delete(self, *, timeout: float) -> None:
+            super().delete(timeout=timeout)
+            if len(self.delete_timeouts) == 1:
+                raise ConnectionError(PRIVATE_MARKER)
+
+    async def sleeper(delay: float) -> None:
+        delays.append(delay)
+
+    blob = FlakyBlob()
+    client.mock_bucket.blobs[object_name] = blob
+    retry = retry_module.BoundedRetry(random=lambda: 1.0, sleeper=sleeper)
+    storage = CloudStorageScratchStorage(
+        bucket_name=SCRATCH_BUCKET,
+        client=cast(object, client),
+        request_timeout_seconds=7.0,
+        retry=retry,
+    )
+
+    async def exercise() -> None:
+        assert (
+            await storage.stage(
+                object_name=object_name,
+                data=b"private-retry-bytes",
+                media_type="application/pdf",
+            )
+            == f"gs://{SCRATCH_BUCKET}/{object_name}"
+        )
+        await storage.delete(object_name=object_name)
+
+    asyncio.run(exercise())
+
+    assert len(blob.uploads) == 2
+    assert blob.delete_timeouts == [7.0, 7.0]
+    assert delays == [0.25, 0.25]
 
 
 class MockGeminiResponse:

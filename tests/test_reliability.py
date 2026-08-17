@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import importlib
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -280,6 +281,96 @@ def test_fail_01_ambiguous_send_is_retryable_and_never_acknowledged() -> None:
 
     assert asyncio.run(coordinator.process(WORK)) is ProcessResult.RETRY
     assert store.retries == ["gmail_transport_error"]
+    assert len(gmail.send_calls) == 1
+
+
+def test_fail_03_retry_is_two_attempts_with_one_full_jitter_delay() -> None:
+    retry_module = importlib.import_module("alza_ai.retries")
+    delays: list[float] = []
+    calls = 0
+
+    async def sleeper(delay: float) -> None:
+        delays.append(delay)
+
+    async def unavailable() -> None:
+        nonlocal calls
+        calls += 1
+        raise GmailRetryableError("gmail_transport_error")
+
+    retry = retry_module.BoundedRetry(random=lambda: 1.0, sleeper=sleeper)
+    with pytest.raises(GmailRetryableError, match="gmail_transport_error"):
+        asyncio.run(
+            retry.run(
+                unavailable,
+                retry_if=lambda error: isinstance(error, GmailRetryableError),
+            )
+        )
+
+    assert calls == 2
+    assert delays == [0.25]
+
+
+def test_time_01_retry_delay_that_exceeds_budget_starts_no_second_call() -> None:
+    retry_module = importlib.import_module("alza_ai.retries")
+    delays: list[float] = []
+    calls = 0
+
+    async def sleeper(delay: float) -> None:
+        delays.append(delay)
+
+    async def unavailable() -> None:
+        nonlocal calls
+        calls += 1
+        raise GmailRetryableError("gmail_transport_error")
+
+    retry = retry_module.BoundedRetry(random=lambda: 1.0, sleeper=sleeper)
+    with pytest.raises(retry_module.RetryBudgetExceeded):
+        asyncio.run(
+            retry.run(
+                unavailable,
+                retry_if=lambda error: isinstance(error, GmailRetryableError),
+                remaining_seconds=lambda: 0.1,
+            )
+        )
+
+    assert calls == 1
+    assert delays == []
+
+
+def test_fail_03_coordinator_retries_only_the_safe_gmail_read() -> None:
+    retry_module = importlib.import_module("alza_ai.retries")
+    delays: list[float] = []
+
+    async def sleeper(delay: float) -> None:
+        delays.append(delay)
+
+    class FlakyReadGmail(FakeGmail):
+        def __init__(self) -> None:
+            super().__init__()
+            self.get_calls = 0
+
+        def get_message(self, message_id: str) -> Mapping[str, object]:
+            self.get_calls += 1
+            if self.get_calls == 1:
+                raise GmailRetryableError("gmail_transport_error")
+            return super().get_message(message_id)
+
+    gmail = FlakyReadGmail()
+    store = FakeStore()
+    retry = retry_module.BoundedRetry(random=lambda: 0.5, sleeper=sleeper)
+    coordinator = MessageCoordinator(
+        store=store,  # type: ignore[arg-type]
+        gmail=gmail,
+        analyzer=FakeAnalyzer(),
+        provider=FakeProvider(),
+        parser=parse_source,
+        owner_factory=lambda: "owner",
+        retry=retry,
+    )
+
+    assert asyncio.run(coordinator.process(WORK)) is ProcessResult.ACK
+    assert gmail.get_calls == 2
+    assert delays == [0.125]
     assert len(gmail.send_calls) == 1
 
 

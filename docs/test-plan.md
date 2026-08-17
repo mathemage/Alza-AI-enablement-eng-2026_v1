@@ -467,6 +467,16 @@ The focused suite must cover these failure decisions individually:
   dead-letter subscription configuration, and reconciliation continues to skip only
   durable `terminal_error`/`completed` records.
 
+The supplementary Red command is
+`uv run pytest tests/test_reliability.py tests/test_attachments.py -q`. Before the
+shared retry helper exists, its tests must fail while proving that retryable Gmail
+reads and scratch stage/delete receive exactly two attempts and one sampled full-
+jitter delay, terminal/read-success cases receive no retry, and a delay that cannot
+fit the `105s` budget starts no second call. A dedicated mocked-Terraform assertion
+must keep both primary subscriptions at five attempts and connected to the shared
+seven-day dead-letter monitor. Send, model, label, and state calls remain exactly
+once per processing attempt.
+
 Security cases feed unsafe values directly to the pure boundary and through a full
 coordinator attempt. `javascript:`, `data:`, credentials, malformed/non-public hosts,
 and control-character citation URLs are discarded. Script tags, event attributes,
