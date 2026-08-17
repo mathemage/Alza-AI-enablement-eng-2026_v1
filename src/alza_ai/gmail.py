@@ -38,6 +38,14 @@ class MessagePage:
 
 
 @dataclass(frozen=True, slots=True)
+class GmailMessageMetadata:
+    message_id: str
+    thread_id: str
+    internal_date_ms: int
+    label_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ThreadMessage:
     message_id: str
     rfc_message_id: str | None
@@ -93,6 +101,8 @@ class GmailGateway(Protocol):
     ) -> HistoryPage: ...
 
     def list_unread(self, page_token: str | None = None) -> MessagePage: ...
+
+    def get_message_metadata(self, message_id: str) -> GmailMessageMetadata: ...
 
     def get_message(self, message_id: str) -> Mapping[str, object]: ...
 
@@ -236,6 +246,30 @@ class GmailApiGateway:
             .get(userId="me", id=message_id, format="full")
         )
 
+    def get_message_metadata(self, message_id: str) -> GmailMessageMetadata:
+        response = self._execute(
+            self._service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=[],
+            )
+        )
+        try:
+            internal_date_ms = int(self._required_string(response, "internalDate"))
+        except ValueError:
+            raise GmailTerminalError("gmail_invalid_response") from None
+        if internal_date_ms < 0:
+            raise GmailTerminalError("gmail_invalid_response")
+        return GmailMessageMetadata(
+            message_id=self._required_string(response, "id"),
+            thread_id=self._required_string(response, "threadId"),
+            internal_date_ms=internal_date_ms,
+            label_ids=self._string_tuple(response, "labelIds"),
+        )
+
     def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
         response = self._execute(
             self._service.users()
@@ -377,6 +411,15 @@ class GmailApiGateway:
         ):
             raise GmailTerminalError("gmail_invalid_response")
         return tuple(cast(Mapping[str, object], item) for item in items)
+
+    @staticmethod
+    def _string_tuple(value: Mapping[str, object], key: str) -> tuple[str, ...]:
+        items = value.get(key, [])
+        if not isinstance(items, list) or not all(
+            isinstance(item, str) and item for item in items
+        ):
+            raise GmailTerminalError("gmail_invalid_response")
+        return tuple(cast(str, item) for item in items)
 
 
 def build_threaded_reply(

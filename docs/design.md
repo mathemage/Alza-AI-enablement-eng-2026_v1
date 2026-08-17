@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 09. Later issues must update
+Status: frozen baseline updated through backlog item 10. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -26,6 +26,12 @@ the one-message coordinator and route, transactional Firestore processing record
 deterministic threaded sending, metadata-only send recovery, and success/error label
 transitions. It does not activate a watch, synchronize Gmail history, deploy, or add
 frontend implementation.
+
+Backlog item 10 adds only Gmail push-envelope validation, serialized mailbox-history
+synchronization, metadata-only work publication, transactional cursor/checkpoint
+state, daily watch renewal, and bounded unread reconciliation. It does not construct
+deployment adapters from environment variables, add retry/observability policy beyond
+this synchronization boundary, deploy, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -186,16 +192,17 @@ The later coordinator owns deterministic message headers.
 
 ## Integration interfaces
 
-Vendor SDKs remain behind five narrow interfaces; tests define deterministic fakes
+Vendor SDKs remain behind six narrow interfaces; tests define deterministic fakes
 before real adapters.
 
 | Interface | Required operations and contract |
 | --- | --- |
-| `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
+| `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch ID/labels/`internalDate`-only metadata or one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
 | `AttachmentAnalyzer` | Analyze an ordered sequence of validated `Attachment` values into ordered bounded `AttachmentInsight` values. It owns staging, one Gemini call per successfully staged attachment, concurrency `2`, timeout normalization, and unconditional scratch deletion. An ordinary partial failure completes every attachment job and then raises the first sanitized error in input order; it never returns partial insights. |
 | `ReplyProvider` | Asynchronously generate one `GeneratedReply` from only current normalized text and an ordered sequence of bounded `AttachmentInsight` values. Gemini and OpenRouter obey this same signature and output contract, classify search before the call, make exactly one generation call with zero or one selected-provider native search tool, normalize citations client-side, and expose typed retry classification without fallback. |
 | `WorkPublisher` | Publish one versioned metadata-only work item with a deterministic work key used by the consumer for idempotency, and return only after Pub/Sub accepts it. Pub/Sub delivery itself remains at-least-once; batch success is all-or-cursor-does-not-advance. |
-| `ProcessingStore` | Transactionally own mailbox sync/cursors and per-message claims, leases, attempt counts, state transitions, deterministic outbound IDs, reconciliation checkpoints, and sanitized failures. It accepts no content-bearing domain value. |
+| `SynchronizationStore` | Transactionally own mailbox activation/watch metadata, the shared synchronization lease, history cursor, and bounded page-token/item-offset checkpoints. It reads only final per-message state and accepts no content-bearing domain value. |
+| `ProcessingStore` | Transactionally own per-message claims, leases, attempt counts, state transitions, deterministic outbound IDs, and sanitized failures. It accepts no content-bearing domain value. |
 
 Application orchestration depends only on these interfaces. Fakes cover normal tests;
 vendor calls and paid/live calls are opt-in acceptance concerns.
@@ -560,22 +567,62 @@ responses and logs contain no exception or message content.
 
 ## Synchronization, retry, and terminal-failure semantics
 
-Mailbox synchronization uses a separate `120s` Firestore lease and processes at most
-10 history pages or 500 discovered messages per request. It persists only a sanitized
-sync generation and Gmail page token between bounded requests; the committed history
-cursor remains unchanged. Each page's eligible work is published before its page
-checkpoint is saved, so a crash can duplicate but not lose work. Only completion of
-the final page advances the committed cursor in one transaction and clears the
-checkpoint. Any partial publication failure leaves both cursor and page checkpoint at
-the last wholly published boundary. Duplicate notifications and overlapping
-Scheduler runs either hold the lease or acknowledge an already active synchronization.
+`POST /events/gmail` accepts only a Pub/Sub push envelope whose base64-decoded JSON is
+an object with non-empty string `emailAddress` and decimal-string `historyId` values.
+The address must case-insensitively equal the one configured mailbox, but neither the
+address nor malformed payload data is logged, persisted, reflected, or copied to work.
+Malformed, wrong-mailbox, and already-committed duplicate notifications receive an
+empty `204`. A valid newer notification is only a synchronization trigger; its
+`historyId` is never assigned directly to the committed cursor.
 
-Initial and periodic reconciliation scans unread messages no older than UTC
-`activated_at`, at most 10 pages or 500 messages per invocation. A sanitized page
-checkpoint allows the next five-minute invocation to continue; only a completed scan
-clears it. Completed and `terminal_error` records are skipped. Missing and retryable
-records are republished. If Gmail rejects a history cursor as stale, reconciliation
-must complete before a fresh watch history position replaces the cursor.
+Mailbox history synchronization and unread reconciliation share one separate `120s`
+Firestore lease per opaque `mailbox_key`. Lease acquisition is transactional, so at
+most one request calls Gmail or publishes work; an overlapping push or Scheduler run
+observes the active owner and returns empty `204`, relying on that owner's invocation
+or retry to finish. An expired lease is reclaimable. A history invocation reads only
+from the committed `history_cursor`, processes at most 10 pages or 500 discovered
+messages, and deduplicates a message within the invocation while preserving Gmail
+order. Eligible history is a message added with both `INBOX` and `UNREAD`, or a
+message on which post-activation history explicitly added `INBOX` while it is unread.
+
+Each work publication is canonical compact JSON containing exactly
+`schema_version=1`, opaque `mailbox_key`, Gmail `message_id`, the record's Gmail
+`history_id`, and a deterministic opaque `correlation_id`. The correlation is derived
+only from those opaque values. Work never contains the mailbox address, thread ID,
+labels, timestamps, subject, sender, body, headers, attachment/model data, or other
+raw content. The publisher waits for Pub/Sub acceptance of every item. Only after an
+entire history page publishes may the transaction save its sanitized page-token and
+integer item-offset checkpoint. A partial page failure retains the previous checkpoint
+and committed cursor, so replay may duplicate accepted items but cannot lose an item.
+Only the final fully published page transactionally advances `history_cursor` to
+Gmail's final history position, clears the checkpoint, and releases the lease.
+
+`POST /jobs/renew-watch` calls the existing exact-topic `INBOX` watch operation. The
+first successful activation transaction sets immutable UTC `activated_at`, initializes
+`history_cursor` from the returned watch position, and records the expiration. Later
+daily calls update the watch position/expiration metadata but never change
+`activated_at`, replace the committed cursor, or clear synchronization checkpoints.
+Repeating a successful renewal is therefore safe. Initial activation immediately runs
+the same unread reconciliation contract; the deployed Scheduler also invokes renewal
+at `0 3 * * *` UTC.
+
+Initial and periodic reconciliation lists `INBOX`+`UNREAD`, reads only per-message ID,
+labels, and Gmail `internalDate` metadata, and processes at most 10 pages or 500 listed
+messages per invocation. Mail older than UTC `activated_at` is excluded unless the
+post-activation history rule above explicitly observed it entering `INBOX`.
+`completed` and `terminal_error` processing records are skipped; absent, retryable,
+or in-flight records are safely republished for the effectively-once processor. A
+page-token/item-offset checkpoint lets the next `*/5 * * * *` UTC invocation continue,
+while a partial publication failure retains the prior checkpoint. Reconciliation
+never moves the history cursor.
+
+If Gmail returns `404` for the committed history cursor, synchronization first runs a
+complete bounded unread reconciliation under the same lease. When the scan reaches
+its final page, it starts/renews the watch and transactionally replaces the stale
+cursor with the returned fresh history position while clearing stale checkpoints.
+If any reconciliation, publication, watch, or transaction step fails, the stale
+cursor remains committed and the handler returns empty `503`; it never jumps to the
+push notification's position or performs an unbounded history/unread scan.
 
 Retryable classes are timeouts, connection failures, rate limits, provider or Google
 `5xx`, Firestore conflicts/unavailability, transient storage failures, incomplete

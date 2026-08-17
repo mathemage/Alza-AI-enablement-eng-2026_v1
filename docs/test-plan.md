@@ -394,6 +394,56 @@ processing request configured with deterministic local adapters, and verify the
 documented empty status/body plus `GET /healthz`. This running HTTP check is the
 Playwright-equivalent integration layer because the product has no browser UI.
 
+## Issue 10 executable contract
+
+The focused suite is `uv run pytest tests/test_synchronization.py -q`. Its Red run
+occurs after this specification and the focused tests exist but before the
+push-envelope parser, synchronization store/coordinator, work publisher, watch
+renewal, reconciliation, and three HTTP routes exist. Acceptable Red evidence is a
+collection failure naming the absent `alza_ai.synchronization` contract. A credential,
+emulator, network, Pub/Sub/Gmail service, missing third-party package, or unrelated
+syntax failure is not acceptable Red evidence. The failing state is not committed.
+
+Push parsing cases decode the owned synthetic Gmail notification and accept only the
+configured mailbox plus decimal history ID. Malformed base64/JSON, absent values, and
+wrong mailboxes return empty `204` without coordinator calls or reflecting address or
+payload data. Replaying one valid push after its cursor commits performs no additional
+history call or work publication. Two simultaneous pushes for one mailbox use a
+barrier-controlled Gmail fake and transactional store: exactly one owns the mailbox
+lease and publishes; the overlapping request acknowledges without entering Gmail.
+
+The history contract uses ordered synthetic `messagesAdded` and `labelsAdded` records
+across pages. It proves each message is deduplicated per invocation and that published
+JSON has exactly `schema_version`, `mailbox_key`, `message_id`, `history_id`, and
+deterministic `correlation_id`, with no owned raw marker. A publisher that accepts one
+item then fails forces empty `503`; the cursor and page checkpoint retain their prior
+values, and redelivery safely republishes before advancing the cursor. A fully
+published final page advances once to Gmail's returned final cursor.
+
+A Gmail `404` stale-cursor case proves the pushed history ID is never committed. It
+runs bounded unread recovery first and replaces the stale cursor with a fresh watch
+position only after the final reconciliation publication succeeds. An injected
+reconciliation/publication failure retains the stale cursor. Every Gmail history or
+unread scan is capped at 10 pages or 500 listed messages and persists only a sanitized
+page-token/item-offset continuation checkpoint when more work remains.
+
+Reconciliation tests create a dropped post-activation unread message, a message whose
+`internalDate` predates immutable `activated_at`, completed and `terminal_error`
+records, and a retryable processing record. The dropped and retryable messages publish;
+the pre-activation and final records do not. Repeating the scan is safe. Initial watch
+activation records UTC `activated_at`, its returned cursor, and expiration once;
+subsequent daily renewal changes only watch metadata. The ASGI contract maps completed,
+duplicate, malformed, and wrong-mailbox work to empty `204`, and safe-progress
+failures to empty `503` for `/events/gmail`, `/jobs/renew-watch`, and
+`/jobs/reconcile-unread`.
+
+After Refactor, run `uv run pytest tests/test_synchronization.py -q`, then `uv run
+pytest -q`, `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy
+src tests`. Start current-branch `uvicorn`, verify `GET /healthz`, malformed push
+acknowledgment, and the empty retry responses produced when deployment adapters are
+intentionally absent. This live HTTP/ASGI exercise is the Playwright-equivalent
+integration layer because this item adds no browser UI.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
