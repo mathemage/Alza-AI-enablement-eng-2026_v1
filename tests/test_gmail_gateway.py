@@ -12,6 +12,7 @@ from alza_ai.gmail import (
     GmailAmbiguousSendError,
     GmailApiGateway,
     GmailGateway,
+    GmailMessageMetadata,
     GmailMessageRef,
     GmailRetryableError,
     GmailTerminalError,
@@ -38,6 +39,18 @@ FULL_MESSAGE: JsonObject = {
     "labelIds": ["INBOX", "UNREAD"],
     "payload": {"mimeType": "text/plain", "body": {"data": "cXVlc3Rpb24="}},
 }
+MESSAGE_METADATA_RESPONSE: JsonObject = {
+    "id": "message-1",
+    "threadId": "thread-1",
+    "internalDate": "1786968000000",
+    "labelIds": ["INBOX", "UNREAD"],
+}
+MESSAGE_METADATA = GmailMessageMetadata(
+    message_id="message-1",
+    thread_id="thread-1",
+    internal_date_ms=1_786_968_000_000,
+    label_ids=("INBOX", "UNREAD"),
+)
 ATTACHMENT = b"attachment-bytes"
 THREAD = ThreadSnapshot(
     thread_id="thread-1",
@@ -86,6 +99,10 @@ class FakeGmailGateway:
     def get_message(self, message_id: str) -> Mapping[str, object]:
         assert message_id == "message-1"
         return FULL_MESSAGE
+
+    def get_message_metadata(self, message_id: str) -> GmailMessageMetadata:
+        assert message_id == "message-1"
+        return MESSAGE_METADATA
 
     def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
         assert (message_id, attachment_id) == ("message-1", "attachment-1")
@@ -208,6 +225,7 @@ def exercise_gateway_contract(gateway: GmailGateway) -> None:
         messages=(GmailMessageRef("message-1", "thread-1"),),
         next_page_token="message-next",
     )
+    assert gateway.get_message_metadata("message-1") == MESSAGE_METADATA
     assert gateway.get_message("message-1") == FULL_MESSAGE
     assert gateway.get_attachment("message-1", "attachment-1") == ATTACHMENT
     gateway.modify_labels("message-1", add=("AI/Processed",), remove=("UNREAD",))
@@ -236,7 +254,7 @@ def configured_mock_service() -> MockGmailService:
             "nextPageToken": "message-next",
         }
     )
-    messages.get.queue(FULL_MESSAGE)
+    messages.get.queue(MESSAGE_METADATA_RESPONSE, FULL_MESSAGE)
     messages.attachment_resource.get.queue(
         {"data": base64.urlsafe_b64encode(ATTACHMENT).decode().rstrip("=")}
     )
@@ -311,7 +329,15 @@ def test_gmail_01_mocked_adapter_satisfies_the_same_contract() -> None:
             "pageToken": "message-page",
         }
     ]
-    assert messages.get.calls == [{"userId": "me", "id": "message-1", "format": "full"}]
+    assert messages.get.calls == [
+        {
+            "userId": "me",
+            "id": "message-1",
+            "format": "metadata",
+            "metadataHeaders": [],
+        },
+        {"userId": "me", "id": "message-1", "format": "full"},
+    ]
     assert messages.attachment_resource.get.calls == [
         {
             "userId": "me",
