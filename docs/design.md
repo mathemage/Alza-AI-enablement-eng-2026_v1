@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 08. Later issues must update
+Status: frozen baseline updated through backlog item 09. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -21,9 +21,11 @@ multimodal adapters, and the asynchronous attachment analyzer. Backlog item 07 a
 only provider-neutral generated replies, one shared reply contract, Gemini and
 OpenRouter reply adapters, and selected-provider configuration. Backlog item 08 adds
 only deterministic live-search policy, the selected provider's native search tool,
-and application-owned citation validation and rendering. These items do not integrate
-parsing, analysis, or generation into a processing route, activate a watch, access a
-live mailbox, deploy, or add frontend implementation.
+and application-owned citation validation and rendering. Backlog item 09 adds only
+the one-message coordinator and route, transactional Firestore processing records,
+deterministic threaded sending, metadata-only send recovery, and success/error label
+transitions. It does not activate a watch, synchronize Gmail history, deploy, or add
+frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -140,7 +142,7 @@ alternate application endpoint.
 | --- | --- | --- | --- |
 | `GET /healthz` | Approved smoke/operator identity; liveness only, with no dependency or secret details | `200` with exactly `{"status":"ok"}` | `503` only when the process cannot serve work |
 | `POST /events/gmail` | Dedicated `gmail-notifications-push` OIDC identity; validate Pub/Sub envelope and configured mailbox, then synchronize history | `204` after complete publish/cursor commit; duplicate, malformed, or wrong-mailbox envelopes are sanitized terminal acknowledgments | `503` for Gmail, transaction, lease, or publication failures |
-| `POST /jobs/process-message` | Dedicated `email-work-push` OIDC identity; process one versioned metadata work item | `204` for success, an in-flight/final duplicate, or a terminal outcome only after terminal handling | `503` while a transient failure remains retryable or terminal bookkeeping cannot complete |
+| `POST /jobs/process-message` | Dedicated `email-work-push` OIDC identity; process one versioned metadata work item | `204` for success, a final duplicate, or a terminal outcome only after terminal handling | `503` for an in-flight duplicate, while a transient failure remains retryable, or when terminal bookkeeping cannot complete |
 | `POST /jobs/renew-watch` | Dedicated Scheduler OIDC identity; renew the configured mailbox watch idempotently | `204` | `503` for a transient Gmail or persistence failure |
 | `POST /jobs/reconcile-unread` | Dedicated Scheduler OIDC identity; run one bounded reconciliation page set | `204` after its bounded checkpoint is durable | `503` when safe progress/checkpointing fails |
 
@@ -490,18 +492,25 @@ context is permitted.
 
 ## Transactional processing state machine
 
-The Firestore record key is a deterministic digest of `mailbox_key` and Gmail
-`message_id`. Its allowed fields are the opaque source/thread IDs, state, lease owner
-and expiry, attempt count, deterministic outbound identity, timestamps, optional
-reconciliation/correlation IDs, and sanitized retry/error codes. It never receives a
-content-bearing model.
+The Firestore document ID is
+`sha256(mailbox_key + ":" + message_id).hexdigest()`. Its complete allowed field set
+for this issue is `mailbox_key`, `message_id`, `thread_id`, `state`, `lease_owner`,
+`lease_expires_at`, `attempt_count`, `outbound_message_id`, `sent_message_id`,
+`created_at`, `updated_at`, and optional `retry_code` or `error_code`. Values are
+opaque identifiers, UTC timestamps, counters, state names, or sanitized stable codes;
+the store API cannot accept `InboundEmail`, `Attachment`, `AttachmentInsight`,
+`GeneratedReply`, address, subject, body, prompt, extracted text, transcript, MIME
+bytes, or generated reply content.
 
 `PROCESSING_LEASE_SECONDS=120` and `MAX_PROCESSING_ATTEMPTS=5`. One Firestore
-transaction creates or reclaims a record and increments the attempt count. An
-unexpired lease has one owner; a concurrent delivery is acknowledged as an in-flight
-duplicate. An expired lease can be reclaimed. A completed or terminal record is
-acknowledged without work. Transaction conflicts are retryable and cannot create two
-owners.
+transaction creates or reclaims a record, assigns a caller-supplied opaque lease
+owner, and increments the attempt count once. An unexpired lease has one owner; a
+concurrent delivery does no work and returns `503` so one duplicate acknowledgment
+cannot suppress recovery if the owner later dies. An expired lease can be reclaimed
+from `processing`, `send_pending`, or `sent`. A completed or terminal record is
+acknowledged without work. Every mutating store operation checks the lease owner and
+legal source state in a Firestore transaction. Transaction conflicts and
+unavailability are retryable and cannot create two owners.
 
 The source maps to these headers:
 
@@ -513,18 +522,23 @@ The source maps to these headers:
 
 | State | Meaning and permitted next state |
 | --- | --- |
-| `processing` | One lease owner may fetch, validate, analyze, and generate. It moves to `send_pending`, remains recoverable after a retryable pre-send failure, or becomes `terminal_error` only through terminal handling. |
-| `send_pending` | The deterministic identity is durable and a send may have happened. Every owner must inspect the original thread before sending. It moves to `sent`, remains `send_pending` after an ambiguous/retryable outcome, or returns to the same inspection path after lease expiry. |
+| `processing` | One lease owner may fetch, validate, analyze, and generate. It moves to `send_pending`, releases its lease but stays `processing` after a retryable pre-send failure, or becomes `terminal_error` only after terminal labeling succeeds. |
+| `send_pending` | The deterministic identity is durable and a send may have happened. Every owner must inspect the original thread before sending. It moves to `sent`, or releases its lease but stays `send_pending` after an ambiguous outcome so redelivery repeats inspection. |
 | `sent` | Gmail acceptance was returned or proven by thread inspection. No further send is allowed. Idempotent label work moves it to `completed`. |
 | `completed` | Final success. The reply is confirmed, `AI/Processed` is applied, and `UNREAD` is removed. No outgoing transition exists. |
 | `terminal_error` | Final deterministic failure. `AI/Error` is confirmed and the source remains unread. No outgoing transition exists. |
 
 Immediately before a send, a transaction persists `send_pending` and the deterministic
 outbound identity; reply content remains in memory. The owner inspects the thread for
-either deterministic header. If found, it records `sent` without sending. If absent,
-it sends once. A successful Gmail response records `sent`; a timeout or lost response
-leaves `send_pending`, returns `503`, and forces inspection after redelivery. Thus a
-crash after Gmail accepts but before Firestore updates cannot cause a blind resend.
+an exact deterministic RFC `Message-ID` or exact source-message header on a message in
+the original thread. If found, it records that Gmail message as `sent` without
+sending. If absent, it sends once. A successful Gmail response with the original
+thread ID records `sent`; a timeout, server failure, malformed send response, or lost
+response transactionally releases the lease while leaving `send_pending`, returns
+`503`, and forces inspection after redelivery. Thus a crash after Gmail accepts but
+before Firestore updates cannot cause a blind resend. Redelivery from `send_pending`
+may reconstruct content in memory only after inspection proves the deterministic
+reply absent; no generated content is stored.
 
 From `sent`, the handler idempotently applies `AI/Processed`, removes `UNREAD`, and
 then records `completed`. A failure in this phase returns `503` and retries labels
@@ -532,6 +546,17 @@ without resending. For a deterministic terminal error, it idempotently applies
 `AI/Error` while leaving `UNREAD`, then records `terminal_error` and acknowledges. If
 labeling or the final transaction fails, it returns `503`; it never acknowledges a
 terminal outcome that recovery cannot observe.
+
+The endpoint accepts only a version-`1` Pub/Sub push envelope whose decoded JSON work
+item contains non-empty `mailbox_key` and `message_id`; it returns an empty `204` for
+completed or terminal claims and an empty `503` for an in-flight claim. The
+coordinator fetches and parses only the claimed current message, requires the fetched
+opaque IDs to match the work item, analyzes its supported attachments, generates one
+reply, and keeps all content in memory. A confirmed reply applies exactly
+`AI/Processed` and removes exactly `UNREAD` before completion. A terminal processing
+error applies exactly `AI/Error` and removes no label before terminal completion.
+Retryable pre-send, ambiguous-send, label, and store failures return an empty `503`;
+responses and logs contain no exception or message content.
 
 ## Synchronization, retry, and terminal-failure semantics
 

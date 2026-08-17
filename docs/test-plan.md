@@ -337,6 +337,63 @@ connection or makes a cloud, live-search, or paid-provider call. Because issue 0
 no HTTP route, start the existing `uvicorn` entry point and verify `GET /healthz` as
 the applicable running-server smoke.
 
+## Issue 09 executable contract
+
+The focused suite is `uv run pytest tests/test_processing.py -q`. Its Red run occurs
+after this specification and the focused fake-boundary tests exist but before the
+processing coordinator, `ProcessingStore`, Firestore adapter, or processing route
+exists. Acceptable Red evidence is a collection failure naming the absent
+`alza_ai.processing` contract, followed by behavioral failures if collection requires
+a minimal import shell. A credential, emulator, network, provider, or unrelated
+syntax failure is not acceptable Red evidence. The failing state is not committed.
+
+The deterministic in-memory store contract and the Firestore adapter use the same
+clock-controlled claim cases. Sequential redelivery after completion is final and
+does no Gmail/provider work. Two simultaneous claims for one record yield exactly one
+owner and one in-flight duplicate; the transaction increments `attempt_count` once
+and the in-flight duplicate remains retryable until the owner reaches a final state.
+An unexpired lease cannot be stolen, while an expired `processing`, `send_pending`,
+or `sent` lease can be reclaimed by one new owner with one additional attempt. A
+retryable pre-send failure releases the `processing` lease, and an ambiguous send
+releases the `send_pending` lease, so the next delivery is eligible immediately.
+Illegal states or stale owners cannot mutate a record.
+
+The coordinator tests start with a source message already represented by metadata-
+only work. They require a deterministic MIME `Message-ID` and
+`X-Alza-AI-Source-Message-ID`, original Gmail `threadId`, exact parsed `Subject`,
+source `In-Reply-To`, and ordered deduplicated `References`. Before every possible
+send the coordinator persists `send_pending` and inspects only thread metadata. A
+matching deterministic RFC ID or source ID proves acceptance and moves to `sent`
+without another send. An absent identity permits one send. A successful send followed
+by a simulated crash before `sent` leaves recoverable `send_pending`; redelivery
+finds the accepted thread message, sends nothing, applies `AI/Processed`, removes
+`UNREAD`, and completes. An ambiguous send with no accepted message returns `503` and
+redelivery may send once only after another negative inspection.
+
+Label tests require confirmed success to call exactly
+`add=("AI/Processed",), remove=("UNREAD",)` before `completed`. Terminal processing
+calls exactly `add=("AI/Error",), remove=()` before `terminal_error`; a label failure
+returns `503` and leaves a recoverable record. Focused privacy assertions recursively
+inspect every persisted Firestore value, captured log record, and HTTP response and
+prove that owned raw markers for address, subject, body, prompt, generated reply,
+attachment bytes, filename, extracted text, transcript, and `AttachmentInsight` do
+not occur.
+
+The ASGI integration cases call `POST /jobs/process-message` with deterministic
+in-process Gmail, parser, analyzer, provider, and store adapters. They require empty
+`204` for a completed delivery or final duplicate and empty `503` for in-flight,
+retryable, or ambiguous work. Malformed versioned envelopes are acknowledged empty
+without content reflection. No default test uses Firestore credentials, Gmail,
+network, live search, or a paid provider; the Firestore transaction surface is
+exercised with a mocked client.
+
+After Refactor, run `uv run pytest tests/test_processing.py -q`, then `uv run pytest
+-q`, `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src
+tests`. Start the current branch with `uvicorn`, send one black-box metadata-only
+processing request configured with deterministic local adapters, and verify the
+documented empty status/body plus `GET /healthz`. This running HTTP check is the
+Playwright-equivalent integration layer because the product has no browser UI.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |

@@ -6,8 +6,8 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol, cast, runtime_checkable
 from uuid import uuid4
 
+import google.cloud.storage as storage  # type: ignore[import-untyped]  # noqa: PLR0402
 from google import genai
-from google.cloud import storage  # type: ignore[import-untyped]
 from google.genai import types
 
 from alza_ai.domain import Attachment, AttachmentInsight
