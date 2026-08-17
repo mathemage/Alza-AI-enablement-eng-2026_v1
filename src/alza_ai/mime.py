@@ -229,6 +229,10 @@ def parse_inbound_email(
     subject = _singleton_header(root_headers, "subject") or ""
     reply_to = _singleton_header(root_headers, "reply-to")
     references = _references(root_headers)
+    auto_submitted = _singleton_header(root_headers, "auto-submitted")
+    precedence = _singleton_header(root_headers, "precedence")
+    list_id = _singleton_header(root_headers, "list-id")
+    auto_response_suppress = _singleton_header(root_headers, "x-auto-response-suppress")
 
     root = _PartBuilder().build(payload)
     leaves = _leaves(root)
@@ -349,6 +353,10 @@ def parse_inbound_email(
         text=text,
         attachments=tuple(attachments),
         warnings=tuple(warnings),
+        auto_submitted=auto_submitted,
+        precedence=precedence,
+        list_id=list_id,
+        auto_response_suppress=auto_response_suppress,
     )
 
 

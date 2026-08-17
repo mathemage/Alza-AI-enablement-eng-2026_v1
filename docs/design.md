@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 10. Later issues must update
+Status: frozen baseline updated through backlog item 11. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -32,6 +32,13 @@ synchronization, metadata-only work publication, transactional cursor/checkpoint
 state, daily watch renewal, and bounded unread reconciliation. It does not construct
 deployment adapters from environment variables, add retry/observability policy beyond
 this synchronization boundary, deploy, or add frontend implementation.
+
+Backlog item 11 adds only the processing failure boundary, sender/loop policy,
+`105s` internal deadline, safe-rendering regression contract, and content-free
+structured processing events. It reuses the existing effectively-once state machine,
+provider-owned citation normalization, and application-owned HTML rendering. It does
+not construct deployment adapters, change infrastructure, deploy, add a frontend, or
+add another retry queue.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -632,6 +639,15 @@ retry is limited to two total attempts with full jitter for idempotent metadata 
 and storage operations. Model generation/analysis is called once per processing
 attempt, and Gmail send is never blindly retried.
 
+The shared in-request retry helper makes one initial call and at most one retry. Its
+single backoff is full jitter in the inclusive range `0..250ms`. Message retrieval,
+attachment retrieval, thread inspection, and scratch-object stage/delete use it;
+provider/model calls, Gmail send, label mutation, and state transitions do not. A
+retry is skipped when its sampled delay cannot fit the coordinator's remaining
+deadline budget. Pub/Sub remains the only dead-letter owner: after five delivery
+attempts it forwards an unacknowledged item to the shared seven-day
+`dead-letter-monitor` path.
+
 Terminal classes are malformed or unsupported MIME, type/signature mismatch, size or
 count violation, unusable body, sender/loop policy rejection, unsafe irreparable
 provider output, and retry-budget exhaustion. They use sanitized stable codes only.
@@ -646,6 +662,32 @@ message retention. Dead-letter monitoring also retains messages for seven days.
 Dead letters cover repeated endpoint unavailability and failures that prevent safe
 terminal bookkeeping; application-final terminal records are acknowledged and do not
 need dead-letter delivery.
+
+For message processing, the classification boundary is exhaustive and ordered:
+
+| Failure source | Classification and acknowledgment |
+| --- | --- |
+| `GmailRetryableError` or `GmailAmbiguousSendError` | Retryable; release the recoverable lease when possible and return `503`. An ambiguous send always remains recoverable through thread inspection. |
+| `AttachmentAnalysisError` | Retryable storage/media-provider boundary failure; release and return `503`. |
+| `ReplyProviderError(retryable)` | Retryable provider failure; release and return `503`. |
+| `ProcessingStoreError` or internal-deadline exhaustion | Retryable; never report success when the durable state is unknown. |
+| `MimeParseError`, source mismatch, sender/loop rejection, or `ReplyProviderError(terminal)` before send | Terminal candidate; add exactly `AI/Error`, remove no labels, persist `terminal_error`, then and only then return `204`. |
+| Any Gmail or store failure while applying/persisting a terminal candidate | Retryable bookkeeping failure; return `503` and do not persist `terminal_error` before `AI/Error` is confirmed. |
+
+The fifth claimed attempt remains the bounded processing budget. Exhaustion follows
+the same terminal-label ordering; if the label or terminal state write fails, Pub/Sub
+continues redelivery and may forward the delivery to the existing dead-letter topic.
+No retryable class is acknowledged as success.
+
+The coordinator receives a monotonic clock and establishes one absolute deadline
+`105.0s` after entry. It checks the remaining budget before fetch, attachment
+analysis, generation, thread inspection, send, label, and state transitions. Async
+analysis and generation are bounded by the remaining budget. At or beyond the
+deadline it starts no new provider or Gmail send operation, records the sanitized
+retry code `processing_deadline_exceeded` when possible, and returns `503`. The
+existing five-attachment, concurrency-two, 30-second media-job, one-generation,
+one-search, 2,048-output-token, 8,000-character, and five-citation ceilings remain
+unchanged.
 
 ## Regional infrastructure and IAM
 
@@ -748,6 +790,33 @@ and deployment require explicit operator approval in issue 13.
 - HTTP responses are empty except the stable health payload and contain neither
   identifiers nor exception text. Metrics aggregate counts and latency without
   content labels.
+
+Sender policy is evaluated after MIME normalization and before attachment analysis or
+generation. `From` must contain exactly one valid normalized address present in the
+configured allowlist. The normalized sender must differ from the dedicated mailbox.
+`Auto-Submitted` is accepted only when absent or `no`; `Precedence` rejects
+`bulk`, `list`, and `junk`; any non-empty `List-Id` rejects list mail; and any
+non-empty `X-Auto-Response-Suppress` other than `none` rejects automated mail. Policy
+failures use only `policy_sender_not_allowed` or `policy_reply_loop` and follow the
+terminal label/state protocol. Addresses never enter persistence or telemetry.
+
+Application-rendered reply HTML is the escaped normalized plain text plus only
+application-owned `<br>` and citation-link markup. Citation URLs are canonicalized
+before rendering and admit only `http` or `https` with a valid public host, no
+credentials, whitespace/control characters, fragment, invalid port, or non-global IP
+literal. Rejected citations are not rendered or fetched. Provider prose, titles, and
+URLs are escaped in their HTML contexts.
+
+Each processing invocation emits structured stage records through an allowlisting
+telemetry sink. Every record contains exactly the applicable subset of
+`event`, `correlation_id`, opaque `mailbox_key`, opaque `message_id`, `state`,
+`stage`, `attempt`, `provider`, `model`, `retry_class`, sanitized `error_code`,
+`stage_latency_ms`, and `total_latency_ms`. Required identifiers are derived only
+from work metadata; arbitrary mappings and exception text are never merged. Latency
+is non-negative monotonic integer milliseconds. At least one final record contains
+total latency, and completed provider work records the provider/model plus its stage
+latency. The sink receives no address, subject, body, prompt, reply, insight,
+filename, media, token value/count, credential, secret, or raw exception field.
 
 ## Cost, quota, and time controls
 
