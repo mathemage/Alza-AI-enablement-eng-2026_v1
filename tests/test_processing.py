@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
@@ -35,7 +36,12 @@ from alza_ai.processing import (
 )
 
 NOW = datetime(2026, 8, 17, 12, tzinfo=UTC)
-WORK = WorkItem(mailbox_key="mailbox-key", message_id="message-1")
+WORK = WorkItem(
+    mailbox_key="mailbox-key",
+    message_id="message-1",
+    history_id="101",
+    correlation_id=hashlib.sha256(b"mailbox-key:message-1:101").hexdigest(),
+)
 SOURCE = InboundEmail(
     mailbox_key=WORK.mailbox_key,
     message_id=WORK.message_id,
@@ -619,6 +625,8 @@ def test_api_01_processing_route_maps_coordinator_result(
                     "schema_version": 1,
                     "mailbox_key": WORK.mailbox_key,
                     "message_id": WORK.message_id,
+                    "history_id": WORK.history_id,
+                    "correlation_id": WORK.correlation_id,
                 }
             ),
         )
@@ -654,6 +662,8 @@ def test_proc_03_asgi_redelivery_completes_once() -> None:
             "schema_version": 1,
             "mailbox_key": WORK.mailbox_key,
             "message_id": WORK.message_id,
+            "history_id": WORK.history_id,
+            "correlation_id": WORK.correlation_id,
         }
     )
 
@@ -678,6 +688,8 @@ def test_proc_03_asgi_ambiguous_acceptance_recovers_to_204() -> None:
             "schema_version": 1,
             "mailbox_key": WORK.mailbox_key,
             "message_id": WORK.message_id,
+            "history_id": WORK.history_id,
+            "correlation_id": WORK.correlation_id,
         }
     )
 

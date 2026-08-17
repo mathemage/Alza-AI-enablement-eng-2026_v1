@@ -432,6 +432,7 @@ def build_threaded_reply(
     source_rfc_message_id: str,
     references: tuple[str, ...],
     text: str,
+    html: str | None = None,
 ) -> OutboundMessage:
     ordered_references = tuple(dict.fromkeys((*references, source_rfc_message_id)))
 
@@ -445,6 +446,8 @@ def build_threaded_reply(
     message["In-Reply-To"] = source_rfc_message_id
     message["References"] = " ".join(ordered_references)
     message.set_content(text, charset="utf-8")
+    if html is not None:
+        message.add_alternative(html, subtype="html", charset="utf-8")
     return OutboundMessage(thread_id=thread_id, raw=message.as_bytes(policy=SMTP))
 
 

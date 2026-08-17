@@ -50,8 +50,10 @@ jobs:
         run: uv run ruff check .
       - name: Type check
         run: uv run mypy src tests
-      - name: Test
-        run: uv run pytest -q
+      - name: Black-box integration tests
+        run: uv run pytest tests/integration -q
+      - name: Test with coverage
+        run: uv run pytest --cov=alza_ai --cov-report=term-missing --cov-fail-under=85 -q
       - name: Build container
         run: docker build --tag alza-ai:test .
       - name: Smoke-test non-root container

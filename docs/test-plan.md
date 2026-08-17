@@ -506,6 +506,71 @@ through ASGI and a live local Uvicorn process; Playwright is inapplicable becaus
 frozen product has no browser surface. The local server must remain running for user
 inspection.
 
+## Issue 12 executable contract
+
+The focused command is `uv run pytest tests/integration/test_black_box.py -q`.
+Its first Red run starts a real `uvicorn.Server` on loopback, sends the complete work
+item published by synchronization to `POST /jobs/process-message` with `httpx`, and
+expects processing telemetry to retain the publisher's deterministic
+`correlation_id`. Before repair, the endpoint completes with `204` but the assertion
+fails because the work parser discards `history_id` and `correlation_id` and processing
+derives a different value. A missing executable, dependency, credential, port,
+network service, or unrelated setup failure is not acceptable Red evidence. The
+failing state is not committed.
+
+All black-box requests use live loopback TCP, the five public routes, and realistic
+synthetic authorization plus Pub/Sub/Scheduler request headers. The app is composed
+with deterministic in-memory fakes; tests add no control endpoint and make no Gmail,
+Firestore, Storage, Pub/Sub, Gemini, OpenRouter, search, cloud, or paid call.
+
+The complete success matrix starts from HTTP notification and work envelopes and
+proves:
+
+- plain email plus `PDF`, `MP3`, `WAV`, `JPEG`, and `PNG` attachments traverse the
+  real parser/coordinator boundaries; analysis sees the canonical media types,
+  scratch objects are uniquely allocated and always deleted, and generated output
+  contains grounded, validated citations rendered as escaped application HTML;
+- Gmail receives one deterministic reply in the original thread with exact
+  `Message-ID`, `In-Reply-To`, ordered `References`, and semantic subject; success
+  applies `AI/Processed`, removes `UNREAD`, and persists only final metadata;
+- duplicate push/work delivery and concurrent processing create one owner/send;
+  ambiguous-send and crash-after-send redelivery recover through thread metadata
+  without a second send; and retryable outcomes are empty `503` while terminal and
+  final outcomes are empty `204`;
+- stale cursor recovery, partial history publication, and dropped-notification
+  reconciliation publish every eligible item without cursor loss, while completed
+  and terminal records are skipped;
+- published work uses only the four specified metadata fields plus schema version,
+  and its validated correlation ID is unchanged in processing telemetry.
+
+Privacy assertions recursively inspect every HTTP body, fake Firestore value,
+published work item, and captured structured event. Owned markers for address,
+subject, body, prompt/reply, insight, filename, media bytes, token, credential,
+secret, and raw exception must be absent. Malformed metadata is acknowledged without
+reflection or telemetry. Logs remain allowlisted and retryable versus terminal
+statuses retain the issue-11 contract.
+
+After Refactor, run the focused command, then:
+
+```text
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest --cov=alza_ai --cov-report=term-missing --cov-fail-under=85 -q
+terraform fmt -check -recursive
+terraform -chdir=infra init -backend=false -input=false
+terraform -chdir=infra validate
+terraform -chdir=infra test
+git diff --check
+```
+
+CI runs the same offline gates. It separately builds `alza-ai:test`, verifies a
+non-root configured user, starts the container on loopback port `8080`, requires exact
+`200 {"status":"ok"}` from `GET /healthz`, and stops it through an exit trap. The
+local container smoke uses the same lifecycle. At handoff, the local Uvicorn service
+is left running for inspection. Playwright is not installed because this service has
+no browser UI; live HTTP is its equivalent end-to-end layer.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -518,11 +583,10 @@ inspection.
 | Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The backlog item 05 CI gate runs Ruff formatting and linting, mypy, the complete
-currently available pytest suite, the container smoke check, the offline Terraform
-checks, and the mocked Gmail/OAuth plus pure MIME contracts. The eventual complete CI
-gate will also run broader black-box integration tests and enforce at least
-**85% line coverage** as those layers are introduced.
+The backlog item 12 CI gate runs Ruff formatting and linting, strict mypy, the live
+loopback black-box suite, the complete Python suite with at least **85% line coverage**,
+the built-container smoke check, and offline Terraform checks. It uses
+only deterministic fakes and mocked providers.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
 
