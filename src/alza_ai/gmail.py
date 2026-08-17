@@ -390,15 +390,21 @@ def build_threaded_reply(
     references: tuple[str, ...],
     text: str,
 ) -> OutboundMessage:
-    digest = hashlib.sha256(f"{mailbox_key}:{source_message_id}".encode()).hexdigest()
     ordered_references = tuple(dict.fromkeys((*references, source_rfc_message_id)))
 
     message = EmailMessage(policy=SMTP)
     message["To"] = recipient
     message["Subject"] = subject
-    message["Message-ID"] = f"<alza-ai-{digest}@reply.invalid>"
+    message["Message-ID"] = deterministic_outbound_message_id(
+        mailbox_key, source_message_id
+    )
     message["X-Alza-AI-Source-Message-ID"] = source_message_id
     message["In-Reply-To"] = source_rfc_message_id
     message["References"] = " ".join(ordered_references)
     message.set_content(text, charset="utf-8")
     return OutboundMessage(thread_id=thread_id, raw=message.as_bytes(policy=SMTP))
+
+
+def deterministic_outbound_message_id(mailbox_key: str, source_message_id: str) -> str:
+    digest = hashlib.sha256(f"{mailbox_key}:{source_message_id}".encode()).hexdigest()
+    return f"<alza-ai-{digest}@reply.invalid>"
