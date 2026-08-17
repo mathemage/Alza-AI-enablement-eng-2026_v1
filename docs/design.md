@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 07. Later issues must update
+Status: frozen baseline updated through backlog item 08. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -19,9 +19,11 @@ values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. Backlog 
 06 adds only bounded attachment insights, regional scratch-storage and Gemini
 multimodal adapters, and the asynchronous attachment analyzer. Backlog item 07 adds
 only provider-neutral generated replies, one shared reply contract, Gemini and
-OpenRouter reply adapters, and selected-provider configuration. It does not integrate
-parsing, analysis, or generation into a processing route, enable search or citations,
-activate a watch, access a live mailbox, deploy, or add frontend implementation.
+OpenRouter reply adapters, and selected-provider configuration. Backlog item 08 adds
+only deterministic live-search policy, the selected provider's native search tool,
+and application-owned citation validation and rendering. These items do not integrate
+parsing, analysis, or generation into a processing route, activate a watch, access a
+live mailbox, deploy, or add frontend implementation.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -169,13 +171,16 @@ only in request memory.
 | `InboundEmail` | Opaque mailbox key, Gmail message/thread IDs, decoded RFC `Message-ID`, `Subject`, and `From`, optional decoded `Reply-To`, ordered `References`, UTC `internalDate` timestamp, normalized current-message text, tuple of `Attachment`, and bounded warning codes. It contains no prior thread bodies, and content-bearing fields are excluded from its representation. |
 | `Attachment` | Gmail part ID, sanitized filename, canonical document/audio/image family and MIME type, `attachment` or `inline` disposition, optional normalized content ID, decoded byte length, and immutable decoded bytes. A value exists only after all MIME and size checks pass; filename, content ID, and bytes are excluded from its representation. |
 | `AttachmentInsight` | Original sanitized filename and canonical media type copied from `Attachment`, a trimmed summary (maximum 2,000 characters), trimmed extracted text or transcript (maximum 16,000 characters), at most 20 trimmed relevant facts of 500 characters each, and at most 10 trimmed warnings of 500 characters each. Empty fact/warning entries are discarded. Content-bearing fields are excluded from its representation. |
-| `Citation` | Canonical HTTP(S) URL of at most 2,048 characters, title of at most 200 characters, and optional provider label. URLs have a valid public host and no credentials; equality uses the canonical URL. |
-| `GeneratedReply` | Normalized plain text, application-rendered safe HTML, an empty `Citation` tuple until backlog item 08, selected provider/model, non-negative input/output/total token counts each capped at 1,000,000, and non-negative provider/total latency in integer milliseconds capped at 3,600,000. Provider latency never exceeds total latency. Plain text and rendered HTML are each limited to 8,000 characters, and content-bearing fields are excluded from its representation. |
+| `Citation` | Canonical HTTP(S) URL of at most 2,048 characters, normalized title of at most 200 characters, and selected-provider label. URLs have a syntactically valid public host and no credentials, control characters, fragments, unsafe IP literals, or invalid explicit ports; equality and deduplication use the canonical URL. |
+| `GeneratedReply` | Normalized plain text, application-rendered safe HTML, an ordered tuple of at most five `Citation` values, optional unmodified Gemini Search entry-point HTML kept separate from reply HTML, selected provider/model, non-negative input/output/total token counts each capped at 1,000,000, and non-negative provider/total latency in integer milliseconds capped at 3,600,000. Provider latency never exceeds total latency. Plain text and rendered HTML are each limited to 8,000 characters, and content-bearing fields are excluded from its representation. |
 
 The application client, not either provider, trims the model's prose, normalizes CRLF
-and CR line endings to LF, bounds it, and constructs equivalent plain-text and escaped
-HTML alternatives plus trusted provider/model, usage, and timing metadata. Provider
-HTML is never accepted. The later coordinator owns deterministic message headers.
+and CR line endings to LF, bounds it, appends the same numbered Sources list to plain
+text and escaped HTML, and constructs trusted provider/model, usage, and timing
+metadata. Provider HTML is never accepted as reply HTML. The sole exception is
+Gemini's authenticated Search entry-point fragment: when supplied it is preserved
+byte-for-byte in `search_entry_point_html`, not concatenated with prose or citations.
+The later coordinator owns deterministic message headers.
 
 ## Integration interfaces
 
@@ -186,7 +191,7 @@ before real adapters.
 | --- | --- |
 | `GmailGateway` | Start or renew and stop the `INBOX` watch; page history after a cursor; page `INBOX`+`UNREAD` message references; fetch one complete `full` message; fetch and base64url-decode one external attachment; add/remove message labels; inspect only `Message-ID` and `X-Alza-AI-Source-Message-ID` metadata in a thread; and send one base64url MIME message with a supplied `threadId`. Results use immutable watch/page/reference/thread/sent-message values. |
 | `AttachmentAnalyzer` | Analyze an ordered sequence of validated `Attachment` values into ordered bounded `AttachmentInsight` values. It owns staging, one Gemini call per successfully staged attachment, concurrency `2`, timeout normalization, and unconditional scratch deletion. An ordinary partial failure completes every attachment job and then raises the first sanitized error in input order; it never returns partial insights. |
-| `ReplyProvider` | Asynchronously generate one `GeneratedReply` from only current normalized text and an ordered sequence of bounded `AttachmentInsight` values. Gemini and OpenRouter obey this same signature and output contract, make one generation call, keep citations empty and search tools disabled in backlog item 07, and expose typed retry classification. |
+| `ReplyProvider` | Asynchronously generate one `GeneratedReply` from only current normalized text and an ordered sequence of bounded `AttachmentInsight` values. Gemini and OpenRouter obey this same signature and output contract, classify search before the call, make exactly one generation call with zero or one selected-provider native search tool, normalize citations client-side, and expose typed retry classification without fallback. |
 | `WorkPublisher` | Publish one versioned metadata-only work item with a deterministic work key used by the consumer for idempotency, and return only after Pub/Sub accepts it. Pub/Sub delivery itself remains at-least-once; batch success is all-or-cursor-does-not-advance. |
 | `ProcessingStore` | Transactionally own mailbox sync/cursors and per-message claims, leases, attempt counts, state transitions, deterministic outbound IDs, reconciliation checkpoints, and sanitized failures. It accepts no content-bearing domain value. |
 
@@ -427,8 +432,9 @@ API credential, sender, recipient, subject, message/thread identifier, prior-thr
 body, or other Gmail metadata. OpenRouter sends its key only in the Authorization
 header and never in the JSON body. Gemini sends one text-only `generate_content`
 request; OpenRouter sends one non-streaming `/api/v1/chat/completions` request. Both
-set a 2,048 output-token ceiling and send no search tool, plugin, or provider fallback
-list in backlog item 07.
+set a 2,048 output-token ceiling. A stable request sends no tool. A search-permitted or
+forced-current request sends exactly the native tool selected below and never a
+provider fallback list.
 
 The adapters treat provider prose and usage as untrusted. Empty or malformed success
 responses raise `reply_provider_invalid_response` with terminal classification.
@@ -438,29 +444,49 @@ failures are terminal. Public exception text contains only the stable code and r
 classification. A selected-provider failure is returned unchanged to the caller; no
 code path constructs, calls, or retries with the other reply provider.
 
-Advanced Option C is the only search mode. The application classifies explicit
-freshness needs (including current/latest/today facts, prices, schedules, current
-events, and office holders) as forced-current. Clearly stable questions use a normal
-response call; other questions may permit the selected provider to decide whether to
-search. A forced-current or search-permitted request makes one response-generation
-call with only the provider-native tool: Gemini Google Search grounding or
-`openrouter:web_search`. There is at most one search-enabled response call and one
-reply-generation call total per processing attempt; no retry changes provider or
-adds a second search call.
+Advanced Option C is the only search mode. A pure, case-insensitive policy evaluates
+only `current_email_text`, with forced-current taking precedence over stable-task
+language. Explicit freshness terms such as current, latest, today, tomorrow, or
+"as of"; price, schedule, news, weather, score, availability, and exchange-rate
+questions; and questions naming a current office holder are forced-current. Explicit
+transformations of supplied content such as summarize, rewrite, proofread, translate,
+extract, or draft are stable unless they also match forced-current language. Every
+other ordinary question is search-permitted so the selected provider may decide
+whether search is useful.
 
-Backlog item 07 implements none of that search behavior: every reply request is the
-stable no-tool form and returns no citations. Backlog item 08 alone may extend the
-selected adapter with the provider-native tool and application-owned citation policy.
+A stable request makes one response call without tools. A forced-current or
+search-permitted request makes one response call with only the selected provider's
+native capability: `types.Tool(google_search=types.GoogleSearch())` for Gemini or
+`{"type":"openrouter:web_search"}` for OpenRouter. The OpenRouter request uses neither
+the deprecated `web` plugin nor an `:online` model suffix. There is at most one
+search-enabled response call and one reply-generation call total per generation
+attempt, including missing metadata, malformed metadata, or provider failure; no
+application retry, alternate search path, or provider fallback adds another call.
+Gemini's tool is Google Search grounding; it is not a custom retrieval integration.
 
-The application URL-validates and canonicalizes citations, removes duplicates while
-preserving provider order, and retains at most five citations. It renders them
-consistently in plain text and escaped HTML. Gemini-supplied Search entry-point HTML
-is treated as an authenticated provider-owned UI fragment, preserved unmodified in a
-separate application-owned grounding container when the provider contract requires
-it, and never mixed with model prose. If a forced-current answer lacks valid
-grounding, the reply states that the current fact could not be verified and makes no
-uncited current claim. No scraper, separate search API, RAG, deprecated OpenRouter
-search mode, or full-thread context is permitted.
+Gemini citations come only from the first candidate's Google Search
+`grounding_metadata.grounding_chunks[*].web`; OpenRouter citations come only from the
+first choice message's `url_citation` annotations. The application strips titles,
+bounds them to 200 characters, and canonicalizes URLs by lowercasing scheme and host,
+IDNA-normalizing DNS names, removing default ports and fragments, and using `/` for an
+empty path. It rejects values over 2,048 characters, non-HTTP(S) schemes, credentials,
+control characters or whitespace, invalid or non-public DNS hosts, invalid ports, and
+non-global IP literals. It then removes canonical-URL duplicates in provider order and
+retains at most five citations that fit the reply bounds. Provider snippets and index
+offsets are never rendered or fetched.
+
+Normalized citations are appended as a numbered `Sources:` section in both plain text
+and application-escaped HTML; the `Citation` tuple contains exactly the rendered
+order. Gemini's supplied Search entry-point `rendered_content`, when it is a non-empty
+string, is preserved unmodified in the separate `search_entry_point_html` field as
+required by the grounding contract and is never treated as ordinary safe reply HTML.
+For a forced-current request, or a search-permitted response that reports a grounding
+attempt, zero valid citations causes all provider prose to be discarded and replaced
+with the fixed statement `I couldn't verify the requested current information with
+live web search.` A selected-provider request failure remains the existing sanitized
+typed error, makes no second call, and emits no reply or unsupported freshness claim.
+No scraper, separate search API, RAG, deprecated OpenRouter search mode, or full-thread
+context is permitted.
 
 ## Transactional processing state machine
 
@@ -704,6 +730,9 @@ Spec phase:
 - [Google Gen AI SDK](https://googleapis.github.io/python-genai/) for asynchronous
   generation, stable API selection, response text, usage metadata, and client
   lifecycle;
+- [Vertex AI Grounding with Google Search](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/grounding/grounding-with-google-search)
+  for the native Google Search tool, grounding chunks, citations, and required Search
+  entry-point rendering;
 - [OpenRouter chat completions](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request)
   for bearer authentication, request messages, response text, and usage fields; and
 - [OpenRouter web search](https://openrouter.ai/docs/guides/features/server-tools/web-search)

@@ -36,6 +36,7 @@ class GeneratedReply:
     text: str = field(repr=False)
     html: str = field(repr=False)
     citations: tuple[Citation, ...] = field(repr=False)
+    search_entry_point_html: str | None = field(repr=False)
     provider: str
     model: str
     input_tokens: int

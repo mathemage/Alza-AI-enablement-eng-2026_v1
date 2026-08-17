@@ -286,6 +286,57 @@ Because issue 07 adds no HTTP route, its black-box integration smoke starts the
 existing `uvicorn` entry point and verifies `GET /healthz`; the shared fake/client
 suite is the executable reply-provider boundary.
 
+## Issue 08 executable contract
+
+The focused suite is `uv run pytest tests/test_live_search.py -q`. Its Red run occurs
+after this specification and the focused tests exist but before the search-policy,
+native-tool, grounding-metadata, and citation implementation exists. Acceptable Red
+evidence is collection or assertion failure naming the missing live-search contract,
+followed by failing policy/tool/citation assertions once the tests can collect. A
+credential, network, live provider, missing dependency, or unrelated syntax failure
+is not acceptable Red evidence. The failing state is not committed.
+
+Pure policy cases require `Summarize the supplied attachment.` to remain stable and
+send no tool, an ordinary question without explicit stability or freshness language
+to permit provider-decided search, and representative current price, tomorrow's
+schedule, today's news, and current office-holder questions to require grounding.
+Forced-current terms take precedence when stable-task language appears in the same
+message. Classification reads only current message text, not attachment content or
+thread history.
+
+One parametrized mocked-adapter contract runs against Gemini and OpenRouter and proves
+that a search-permitted or forced-current reply makes exactly one response call.
+Gemini's call contains only `types.Tool(google_search=types.GoogleSearch())`;
+OpenRouter's call contains only `{"type":"openrouter:web_search"}` and contains no
+deprecated plugin or `:online` suffix. Stable cases keep the issue-07 no-tool request.
+A transport or provider grounding failure retains the typed retry classification and
+makes no second call or provider fallback.
+
+Grounded response cases exercise Gemini's first-candidate `grounding_chunks[*].web`
+and Search entry-point `rendered_content`, plus OpenRouter's first-message
+`url_citation` annotations. The application must preserve provider order; strip and
+bound titles; canonicalize scheme, IDNA host, default port, fragment, and empty path;
+deduplicate by canonical URL; reject credentials, controls/whitespace, invalid hosts
+or ports, non-HTTP(S) schemes, and non-global IP literals; and retain no more than five
+safe `Citation` values. The same numbered `Sources:` list must appear in bounded plain
+text and escaped HTML, while a Gemini Search entry-point fragment remains exactly
+unchanged in its separate field.
+
+A forced-current successful response with missing metadata, malformed metadata, or
+no valid citation discards provider prose and returns exactly `I couldn't verify the
+requested current information with live web search.` A search-permitted response may
+remain ungrounded only when metadata shows that the provider did not attempt search;
+once a grounding attempt is reported, the same safe replacement applies. These cases
+assert that no uncited current provider claim survives and that each generation still
+made only its original response call.
+
+After Refactor, run `uv run pytest tests/test_live_search.py -q`, then the complete
+mocked-provider suite with `uv run pytest -q`, `uv run ruff format --check .`,
+`uv run ruff check .`, and `uv run mypy src tests`. No default test opens a network
+connection or makes a cloud, live-search, or paid-provider call. Because issue 08 adds
+no HTTP route, start the existing `uvicorn` entry point and verify `GET /healthz` as
+the applicable running-server smoke.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
