@@ -1,6 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 11. Later issues must update
+Status: frozen baseline updated through backlog item 12. Later issues must update
 this document and `docs/test-plan.md` in their Spec phase before changing a decision.
 
 ## Scope and non-goals
@@ -40,6 +40,12 @@ provider-owned citation normalization, and application-owned HTML rendering. It 
 not construct deployment adapters, change infrastructure, deploy, add a frontend, or
 add another retry queue.
 
+Backlog item 12 adds only the credential-free black-box HTTP harness, complete
+deterministic fake-adapter flows, cross-boundary work correlation, line-coverage gate,
+and built-container smoke. It does not construct deployment adapters, call live or
+paid services, deploy, add frontend technology, or change the frozen production HTTP
+surface.
+
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
 or background worker outside Cloud Run and Pub/Sub. Only the current source message,
@@ -52,15 +58,19 @@ only dependency resolution input in local verification and CI. The importable
 application is `alza_ai.main:app`. FastAPI's OpenAPI, Swagger UI, and ReDoc routes are
 disabled so the scaffold does not expose endpoints outside the frozen HTTP surface.
 
-The exact local setup and verification commands for backlog item 02 are:
+The exact local setup and verification commands through backlog item 12 are:
 
 ```text
 uv sync --locked
-uv run pytest tests/test_health.py -q
-uv run pytest -q
+uv run pytest tests/integration/test_black_box.py -q
+uv run pytest --cov=alza_ai --cov-report=term-missing --cov-fail-under=85 -q
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src tests
+terraform fmt -check -recursive
+terraform -chdir=infra init -backend=false -input=false
+terraform -chdir=infra validate
+terraform -chdir=infra test
 ```
 
 The local server command is:
@@ -70,10 +80,13 @@ uv run uvicorn alza_ai.main:app --host 0.0.0.0 --port 8080
 ```
 
 CI installs Python `3.14`, synchronizes with `uv sync --locked`, then runs the same
-Ruff format/check, mypy, and complete pytest commands. It builds the Dockerfile and
-smoke-checks the same application at `GET /healthz`. The image runs as an explicit
-non-root user, listens on port `8080`, and includes no development dependency or
-credential.
+Ruff format/check, mypy, black-box, complete pytest, coverage, and offline Terraform
+commands. Coverage measures `alza_ai` line execution and fails below `85%`; default
+tests inject deterministic fakes and have no credential, cloud, live-search, or paid
+provider path. CI builds the Dockerfile, confirms its configured user is neither
+empty nor root, starts the production entry point, waits for exact `GET /healthz`
+status/body, and always stops the container. The image listens on port `8080` and
+includes no development dependency or credential.
 
 ## System flow and data ownership
 
@@ -688,6 +701,60 @@ retry code `processing_deadline_exceeded` when possible, and returns `503`. The
 existing five-attachment, concurrency-two, 30-second media-job, one-generation,
 one-search, 2,048-output-token, 8,000-character, and five-citation ceilings remain
 unchanged.
+
+## Black-box integration boundary
+
+The final default integration layer starts the actual FastAPI application with
+`uvicorn.Server` on a loopback TCP socket and uses `httpx` over HTTP. Test setup may
+inject deterministic adapters through `create_app`, but stimuli enter only through
+the five production routes. There is no test-only route, in-process ASGI transport,
+browser, credential, emulator, cloud resource, live search, or paid provider in this
+layer. Requests model the upstream IAM boundary with synthetic authorization and
+Pub/Sub or Scheduler identity headers; Cloud Run remains responsible for validating
+real identities in deployment.
+
+One shared fake composition exercises synchronization publication followed by work
+delivery and processing. Published work carries the exact version-`1` fields
+`mailbox_key`, `message_id`, `history_id`, and deterministic `correlation_id`. The
+processing parser accepts that complete metadata, validates that the history ID is a
+decimal string and that the correlation is the lowercase SHA-256 of
+`mailbox_key + ":" + message_id + ":" + history_id`, and preserves the correlation in
+every structured processing record. Invalid or attacker-selected correlation values
+are acknowledged as malformed and never enter telemetry.
+
+The success matrix covers a plain message and one message for each supported `PDF`,
+`MP3`, `WAV`, `JPEG`, and `PNG` attachment. It uses the real MIME parser, coordinator,
+threaded reply construction, citation validation and safe HTML rendering, plus
+deterministic fake Gmail, scratch storage, attachment model, reply provider,
+Firestore, publisher, and telemetry boundaries. Assertions cover grounded citations,
+thread identity, `AI/Processed`/`UNREAD` transitions, bounded attachment calls, and
+scratch deletion after both success and failure.
+
+Recovery cases drive duplicate notification and work delivery, simultaneous work
+requests, ambiguous send acceptance, crash after accepted send, stale history,
+partial history publication, dropped-notification reconciliation, and completed or
+terminal record skips. Observable HTTP status and empty bodies distinguish retryable
+`503` from acknowledged success or terminal `204`. Tests recursively inspect HTTP
+bodies, fake Firestore documents, published work, and captured structured records;
+none may contain the owned address, subject, body, prompt/reply, insight, filename,
+media, credential, secret, token, or raw-exception markers.
+
+The focused integration command is:
+
+```text
+uv run pytest tests/integration/test_black_box.py -q
+```
+
+The complete Python gate is:
+
+```text
+uv run pytest --cov=alza_ai --cov-report=term-missing --cov-fail-under=85 -q
+```
+
+The built-container gate uses the repository Dockerfile, asserts the non-root image
+user, publishes loopback port `8080`, waits up to 30 seconds for exact health status
+`200` and body `{"status":"ok"}`, reports logs on failure, and stops the container in
+all cases. Local and CI commands are identical.
 
 ## Regional infrastructure and IAM
 

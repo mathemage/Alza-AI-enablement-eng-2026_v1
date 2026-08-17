@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import importlib
 import json
 import logging
@@ -37,7 +38,12 @@ from alza_ai.processing import (
 from alza_ai.reply_providers import ReplyProviderError, RetryClassification
 
 NOW = datetime(2026, 8, 17, 12, tzinfo=UTC)
-WORK = WorkItem(mailbox_key="opaque-mailbox", message_id="opaque-message")
+WORK = WorkItem(
+    mailbox_key="opaque-mailbox",
+    message_id="opaque-message",
+    history_id="101",
+    correlation_id=hashlib.sha256(b"opaque-mailbox:opaque-message:101").hexdigest(),
+)
 SOURCE = InboundEmail(
     mailbox_key=WORK.mailbox_key,
     message_id=WORK.message_id,
@@ -691,6 +697,8 @@ def _work_envelope() -> dict[str, object]:
                 "schema_version": 1,
                 "mailbox_key": WORK.mailbox_key,
                 "message_id": WORK.message_id,
+                "history_id": WORK.history_id,
+                "correlation_id": WORK.correlation_id,
             }
         ).encode()
     ).decode()

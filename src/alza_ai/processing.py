@@ -93,6 +93,8 @@ class ProcessResult(StrEnum):
 class WorkItem:
     mailbox_key: str
     message_id: str
+    history_id: str
+    correlation_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,6 +613,7 @@ class MessageCoordinator:
                 source_rfc_message_id=inbound.rfc_message_id,
                 references=inbound.references,
                 text=reply.text,
+                html=reply.html,
             )
             outbound_message_id = deterministic_outbound_message_id(
                 work.mailbox_key, work.message_id
@@ -968,14 +971,30 @@ def parse_work_envelope(value: object) -> WorkItem | None:
         return None
     mailbox_key = work.get("mailbox_key")
     message_id = work.get("message_id")
+    history_id = work.get("history_id")
+    correlation_id = work.get("correlation_id")
     if (
         not isinstance(mailbox_key, str)
         or not mailbox_key
         or not isinstance(message_id, str)
         or not message_id
+        or not isinstance(history_id, str)
+        or not history_id
+        or not history_id.isascii()
+        or not history_id.isdigit()
+        or not isinstance(correlation_id, str)
+        or correlation_id
+        != hashlib.sha256(
+            f"{mailbox_key}:{message_id}:{history_id}".encode()
+        ).hexdigest()
     ):
         return None
-    return WorkItem(mailbox_key=mailbox_key, message_id=message_id)
+    return WorkItem(
+        mailbox_key=mailbox_key,
+        message_id=message_id,
+        history_id=history_id,
+        correlation_id=correlation_id,
+    )
 
 
 def _record_id(work: WorkItem) -> str:
@@ -983,9 +1002,7 @@ def _record_id(work: WorkItem) -> str:
 
 
 def _correlation_id(work: WorkItem) -> str:
-    return hashlib.sha256(
-        f"processing:{work.mailbox_key}:{work.message_id}".encode()
-    ).hexdigest()
+    return work.correlation_id
 
 
 def _normalize_address(value: str) -> str | None:
