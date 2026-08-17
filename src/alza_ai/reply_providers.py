@@ -609,6 +609,7 @@ def _canonical_public_host(hostname: str) -> str | None:
             len(host) > 253
             or len(labels) < 2
             or labels[-1].isdigit()
+            or labels[-1] in {"internal", "local", "localhost"}
             or any(_DNS_LABEL_PATTERN.fullmatch(label) is None for label in labels)
         ):
             return None

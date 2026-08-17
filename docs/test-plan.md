@@ -444,6 +444,58 @@ acknowledgment, and the empty retry responses produced when deployment adapters 
 intentionally absent. This live HTTP/ASGI exercise is the Playwright-equivalent
 integration layer because this item adds no browser UI.
 
+## Issue 11 executable contract
+
+The focused Red command is `uv run pytest tests/test_reliability.py -q`. Tests use
+the existing in-memory processing store and deterministic Gmail/analyzer/provider
+fakes, a step-controlled monotonic clock, and a recording telemetry sink. They make
+no network, Gmail, Firestore, storage, Pub/Sub, search, or paid-provider call.
+
+The focused suite must cover these failure decisions individually:
+
+- retryable Gmail read/mutation and ambiguous-send errors, attachment storage/model
+  errors, retryable provider errors, processing-store failures, and internal-deadline
+  exhaustion all return `RETRY`, which the ASGI route maps to an empty `503`;
+- malformed MIME, source mismatch, terminal provider output, sender rejection,
+  self-mail, automatic response, bulk/list mail, and bounded-attempt exhaustion are
+  terminal candidates, but return `ACK`/empty `204` only after exactly `AI/Error`
+  was added without removing `UNREAD` and `terminal_error` was persisted;
+- a retryable or terminal Gmail label failure and a processing-store failure during
+  terminal bookkeeping return `RETRY`/empty `503`, do not send a reply, and do not
+  persist terminal state before the error label succeeds;
+- the fifth retry remains bounded, exhausted transport delivery uses the existing
+  dead-letter subscription configuration, and reconciliation continues to skip only
+  durable `terminal_error`/`completed` records.
+
+Security cases feed unsafe values directly to the pure boundary and through a full
+coordinator attempt. `javascript:`, `data:`, credentials, malformed/non-public hosts,
+and control-character citation URLs are discarded. Script tags, event attributes,
+quotes, ampersands, and malicious citation titles remain escaped in generated HTML.
+The sender allowlist accepts one case-normalized mailbox only; unauthorized,
+self-generated, `Auto-Submitted`, bulk/list/junk, `List-Id`, and auto-response-
+suppressed sources are terminally rejected before analyzer/provider/send calls.
+
+Redaction tests put unique markers in every forbidden field: address, subject, body,
+prompt/reply, insight, filename/media bytes, token/credential/secret, and raw exception
+text. Persisted records, structured events, captured logs, and empty HTTP responses
+must contain none of them. An attempted arbitrary telemetry field is dropped rather
+than serialized. Structured records assert the allowlisted identifiers, stage/state,
+attempt, provider/model, retry class, sanitized code, per-stage latency, and final
+total latency.
+
+Deadline tests advance a fake monotonic clock to the `105.0s` boundary and assert no
+new generation or send starts there. Every reported stage and total latency is a
+non-negative integer, final total latency is present on success and failure, and the
+coordinator returns before its internal deadline under the deterministic test clock.
+The existing provider tests remain the contract for the unchanged 2,048-token,
+8,000-character, one-search, and five-citation limits.
+
+After Refactor, the focused command, complete `uv run pytest -q` suite, Ruff format
+and lint, strict mypy, and `git diff --check` must pass. Backend integration runs
+through ASGI and a live local Uvicorn process; Playwright is inapplicable because the
+frozen product has no browser surface. The local server must remain running for user
+inspection.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |

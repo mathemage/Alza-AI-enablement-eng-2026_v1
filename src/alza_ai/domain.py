@@ -60,3 +60,7 @@ class InboundEmail:
     text: str = field(repr=False)
     attachments: tuple[Attachment, ...] = field(repr=False)
     warnings: tuple[str, ...]
+    auto_submitted: str | None = field(default=None, repr=False)
+    precedence: str | None = field(default=None, repr=False)
+    list_id: str | None = field(default=None, repr=False)
+    auto_response_suppress: str | None = field(default=None, repr=False)
