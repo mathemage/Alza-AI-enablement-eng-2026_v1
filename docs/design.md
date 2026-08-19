@@ -477,9 +477,10 @@ API credential, sender, recipient, subject, message/thread identifier, prior-thr
 body, or other Gmail metadata. OpenRouter sends its key only in the Authorization
 header and never in the JSON body. Gemini sends one text-only `generate_content`
 request; OpenRouter sends one non-streaming `/api/v1/chat/completions` request. Both
-set a 2,048 output-token ceiling. A stable request sends no tool. A search-permitted or
-forced-current request sends exactly the native tool selected below and never a
-provider fallback list.
+set the configured output-token ceiling, at most 2,048. A stable request sends no tool.
+A search-permitted or forced-current request sends exactly the native tool selected
+below, and never a provider fallback list, unless the configured search-call ceiling is
+zero.
 
 The adapters treat provider prose and usage as untrusted. Empty or malformed success
 responses raise `reply_provider_invalid_response` with terminal classification.
@@ -996,10 +997,10 @@ storage, Pub/Sub, Firestore, logging, and OpenRouter when selected can consume c
 or incur charges.
 
 One message is bounded to five attachment-analysis calls and one reply-generation
-call. Attachment concurrency is `2`; each attachment upload/model job has a `30s`
-timeout followed by a separately bounded `5s` cleanup attempt; reply output is at
-most 2,048 model tokens and 8,000 rendered characters; search uses at most one enabled
-call and five citations.
+call, or to the lower configured ceilings tabulated below. Attachment concurrency is
+`2`; each attachment upload/model job has a `30s` timeout followed by a separately
+bounded `5s` cleanup attempt; reply output is at most 2,048 model tokens and 8,000
+rendered characters; search uses at most one enabled call and five citations.
 Reconciliation, retries, attempts, message sizes, and retention are bounded as stated
 above. Configured provider/project quotas may lower these ceilings but never raise the
 application limits without a Spec change.
@@ -1012,8 +1013,19 @@ not the per-request timeout.
 
 The Terraform inputs permit only lower or equal application ceilings: at most five
 attachment-analysis calls, one reply-generation call, one search-enabled call, and
-2,048 output tokens per message. They are injected as non-secret Cloud Run settings.
+2,048 output tokens per message. They are injected as non-secret Cloud Run settings,
+read once at startup into `RuntimeQuotas`, and threaded by the production entry point
+into the composed adapters; no other code reads them. An absent variable keeps the
+design maximum. A non-integer or out-of-range value fails startup with
+`runtime_quota_invalid` instead of silently reverting to the maximum.
 The maximum-instance input is similarly limited to `1..2`; the default is `2`.
+
+| Terraform input | Cloud Run variable | Enforced at |
+| --- | --- | --- |
+| `max_attachment_analysis_calls` | `MAX_ATTACHMENT_ANALYSIS_CALLS` | The MIME parser, which accepts at most that many attachments and otherwise raises terminal `mime_too_many_attachments`. The analyzer issues exactly one model call per accepted attachment, so the parser ceiling is the per-message analysis-call ceiling and is enforced in exactly one place. |
+| `max_reply_generation_calls` | `MAX_REPLY_GENERATION_CALLS` | The selected reply provider. `0` is a kill switch: no model is called and generation raises terminal `reply_generation_quota_exhausted`. |
+| `max_search_calls` | `MAX_SEARCH_CALLS` | The selected reply provider. `0` sends no search tool, so a forced-current request returns the unverified-current reply instead of grounded prose. |
+| `max_reply_output_tokens` | `MAX_REPLY_OUTPUT_TOKENS` | The selected reply provider, as `max_output_tokens`/`max_tokens` on its single generation request. |
 
 The billing account, project number, monthly amount, currency, alert thresholds, and
 Monitoring notification-channel IDs are explicit Terraform inputs. Alerts report

@@ -12,9 +12,9 @@ from html.parser import HTMLParser
 from typing import cast
 
 from alza_ai.domain import Attachment, InboundEmail
+from alza_ai.quotas import MAX_ATTACHMENT_ANALYSIS_CALLS
 
 _MALFORMED_MESSAGE = "mime_malformed_message"
-_MAX_ATTACHMENTS = 5
 _MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024
 _MAX_TOTAL_SIZE = 24 * 1024 * 1024
 _MAX_MIME_DEPTH = 50
@@ -205,6 +205,8 @@ def parse_inbound_email(
     mailbox_key: str,
     message: Mapping[str, object],
     external_attachments: Mapping[str, bytes] | None = None,
+    *,
+    max_attachments: int = MAX_ATTACHMENT_ANALYSIS_CALLS,
 ) -> InboundEmail:
     if not isinstance(mailbox_key, str) or not mailbox_key:
         raise MimeParseError(_MALFORMED_MESSAGE)
@@ -275,7 +277,7 @@ def parse_inbound_email(
                 raise MimeParseError(_MALFORMED_MESSAGE)
             candidates.append(part)
             candidate_orders.add(part.order)
-            if len(candidates) > _MAX_ATTACHMENTS:
+            if len(candidates) > max_attachments:
                 raise MimeParseError("mime_too_many_attachments")
         elif part.mime_type not in {"text/plain", "text/html"} and (
             part.disposition == "inline" or part.content_id is not None

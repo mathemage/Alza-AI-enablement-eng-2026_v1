@@ -2,6 +2,7 @@ import json
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Protocol, cast
 
 import google.cloud.firestore as firestore  # noqa: PLR0402
@@ -16,8 +17,10 @@ from alza_ai.attachments import (
 )
 from alza_ai.gmail import GmailApiGateway
 from alza_ai.main import create_app
+from alza_ai.mime import parse_inbound_email
 from alza_ai.oauth import GMAIL_MODIFY_SCOPE
 from alza_ai.processing import MessageCoordinator, ProcessingStore, SenderPolicy
+from alza_ai.quotas import QuotaConfigurationError, RuntimeQuotas
 from alza_ai.reply_providers import load_reply_provider
 from alza_ai.synchronization import (
     MailboxSynchronizer,
@@ -39,6 +42,7 @@ class RuntimeSettings:
     allowed_senders: tuple[str, ...]
     gmail_topic: str
     work_topic: str
+    quotas: RuntimeQuotas
     credentials: Credentials = field(repr=False)
     environment: Mapping[str, str] = field(repr=False)
 
@@ -51,6 +55,10 @@ class RuntimeSettings:
         scratch_bucket = _required_setting(
             source, "SCRATCH_BUCKET", "runtime_scratch_bucket_missing"
         )
+        try:
+            quotas = RuntimeQuotas.load(source)
+        except QuotaConfigurationError as error:
+            raise RuntimeConfigurationError(error.code) from None
         client_document = _json_object(
             source.get("GMAIL_OAUTH_CLIENT_JSON"), "runtime_oauth_client_invalid"
         )
@@ -118,6 +126,7 @@ class RuntimeSettings:
             allowed_senders=allowed_senders,
             gmail_topic=f"projects/{project_id}/topics/gmail-notifications",
             work_topic=f"projects/{project_id}/topics/email-work",
+            quotas=quotas,
             credentials=credentials,
             environment=provider_environment,
         )
@@ -159,7 +168,7 @@ def build_components(
             model=settings.environment["GEMINI_MODEL"],
         )
         analyzer = AttachmentAnalyzer(storage, model)
-        provider = load_reply_provider(settings.environment)
+        provider = load_reply_provider(settings.environment, quotas=settings.quotas)
         publisher_client = pubsub_v1.PublisherClient()
         publisher = PubSubWorkPublisher(publisher_client, topic=settings.work_topic)
         sender_policy = SenderPolicy(settings.mailbox, settings.allowed_senders)
@@ -168,6 +177,10 @@ def build_components(
             gmail=gmail,
             analyzer=analyzer,
             provider=provider,
+            parser=partial(
+                parse_inbound_email,
+                max_attachments=settings.quotas.attachment_analysis_calls,
+            ),
             sender_policy=sender_policy,
         )
         synchronizer = MailboxSynchronizer(
