@@ -69,7 +69,7 @@ flowchart LR
     deadLetter["Shared topic<br/>dead-letter"]
     deadLetterMonitor["Pull subscription<br/>dead-letter-monitor"]
     service["Private Cloud Run<br/>alza-ai"]
-    smoke["Accepted-image health smoke"]
+    smoke["Health validation"]
     scheduler["Cloud Scheduler<br/>renew + reconcile"]
     firestore[("Firestore<br/>metadata and state")]
     scratch[("Regional scratch<br/>Cloud Storage")]
@@ -788,8 +788,8 @@ immutable registry digest.
 
 | Accepted deployment fact | Value |
 | --- | --- |
-| Cloud Run revision | `alza-ai-00005-cfq`, `100%` traffic |
-| Image | `sha256:cf2013a13a82847e48812282a4217bd624e8e3ff6f45c313ad8ed2ced938957f` |
+| Cloud Run revision | `alza-ai-00006-b4t`, `100%` traffic |
+| Image | `sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903` |
 | Access and region | Internal-only, IAM required, no public principal, `europe-west3` |
 | Runtime | Gemini reply provider, minimum/maximum instances `0/1`, concurrency `1`, timeout `115s` |
 | Per-message ceilings | Attachment/generation/search calls `5/1/1`; reply output `2048` tokens |
@@ -826,7 +826,7 @@ is stored. Consent in Testing mode is accepted only with an explicit seven-day t
 risk confirmation; otherwise the operator confirms Production status. The runtime
 ensures the two application label IDs correspond to `AI/Processed` and `AI/Error`.
 Only after the private IAM, Ready/traffic, accepted-image health, and authenticated
-operational-route checks pass does the operator invoke the `renew-watch` route.
+`GET /health` checks pass does the operator invoke the `renew-watch` route.
 Acceptance requires a future Gmail watch expiration recorded with an immutable
 activation time and an exact `gmail-notifications` topic.
 

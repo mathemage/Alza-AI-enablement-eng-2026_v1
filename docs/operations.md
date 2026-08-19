@@ -33,9 +33,10 @@ uv run pytest -q -s tests/live/test_gmail_acceptance.py --live-config="$LIVE_CON
 ```
 
 The Gmail check reads the future watch expiry, activation state, labels, and accepted
-case records; it sends no message and does not renew the watch. The service's
-HTTP startup probe and authenticated health check both use the Cloud Run-compatible
-`GET /health` route and require exact `200 {"status":"ok"}`.
+case records; it sends no message and does not renew the watch. The HTTP startup probe
+and authenticated health check both use the Cloud Run-compatible `GET /health`
+route. Cloud Run gates startup on the successful HTTP status; the separate
+authenticated check asserts exact `200 {"status":"ok"}`.
 
 Run the non-mutating health check from an approved same-project internal execution
 context:

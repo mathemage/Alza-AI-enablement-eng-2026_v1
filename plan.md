@@ -658,24 +658,24 @@ Leave the healthy service and active watch running for the user.
 
 **Success criteria:**
 
-- [ ] Before mutation, the operator explicitly confirms the active Google identity,
+- [x] Before mutation, the operator explicitly confirms the active Google identity,
   project, billing account, `europe-west3` region, dedicated Gmail mailbox, OAuth
   consent status, and expected trial-credit/minimal-cost exposure.
-- [ ] Automated smoke/acceptance checks exist first and are observed failing against
+- [x] Automated smoke/acceptance checks exist first and are observed failing against
   the not-yet-deployed revision without fabricating or committing credentials.
-- [ ] Terraform is applied outside CI, secret versions are added outside Git and
+- [x] Terraform is applied outside CI, secret versions are added outside Git and
   Terraform state, an immutable image is deployed, and Cloud Run has no public
   invoker.
-- [ ] Authenticated `GET /health` passes (replacing Cloud Run's reserved `/healthz`
+- [x] Authenticated `GET /health` passes (replacing Cloud Run's reserved `/healthz`
   path), the Gmail watch is active, Scheduler jobs
   are enabled, subscriptions are healthy, and the configured maximum instance and
   quota controls are visible.
-- [ ] Five live messages cover: plain text; `PDF`; one message with `MP3` and `WAV`;
+- [x] Five live messages cover: plain text; `PDF`; one message with `MP3` and `WAV`;
   one message with `JPEG` and `PNG`; and a forced-current question with grounded,
   valid citations.
-- [ ] Every live case sends exactly one reply in the original thread within `120`
+- [x] Every live case sends exactly one reply in the original thread within `120`
   seconds, applies the expected label/state, and leaves only sanitized evidence.
-- [ ] The private service and Gmail watch remain healthy and running after acceptance;
+- [x] The private service and Gmail watch remain healthy and running after acceptance;
   genuine environmental blockers are reported rather than represented as passes.
 
 **Prompt for an AI coding agent:**
@@ -708,23 +708,23 @@ and Gmail watch before closing the work.
 
 **Success criteria:**
 
-- [ ] `README.md` contains only purpose, prerequisites, local verification, deployment
+- [x] `README.md` contains only purpose, prerequisites, local verification, deployment
   entry points, and links to the authoritative design, test plan, operations, and
   demo documents.
-- [ ] `docs/design.md` and `docs/test-plan.md` match the deployed endpoints, resources,
+- [x] `docs/design.md` and `docs/test-plan.md` match the deployed endpoints, resources,
   state machine, provider/search behavior, privacy boundary, test evidence, and
   measured acceptance results without stale claims.
-- [ ] One readable Mermaid diagram shows Gmail push, both primary Pub/Sub paths, the
+- [x] One readable Mermaid diagram shows Gmail push, both primary Pub/Sub paths, the
   shared dead-letter path, Cloud Run endpoints, Firestore, scratch storage,
   Gemini/OpenRouter native search paths, Scheduler recovery, secrets, and
   observability.
-- [ ] Concise operations and teardown instructions cover OAuth/watch renewal, replay,
+- [x] Concise operations and teardown instructions cover OAuth/watch renewal, replay,
   terminal errors, dead letters, provider switching, quotas, budget alerts,
   rollback, disabling the watch, deleting regional resources, and residual data.
-- [ ] An authoritative Markdown presentation and demo runbook fit `10–15` minutes and
+- [x] An authoritative Markdown presentation and demo runbook fit `10–15` minutes and
   include preflight, five-case sequence, timings, expected outcomes, sanitized
   fallback evidence, limitations, costs, and teardown; no PDF exporter is added.
-- [ ] The final check proves authenticated `GET /health` (replacing Cloud Run's
+- [x] The final check proves authenticated `GET /health` (replacing Cloud Run's
   reserved `/healthz` path), active Gmail watch, enabled
   Scheduler jobs, and a green complete suite while leaving the healthy service
   running.

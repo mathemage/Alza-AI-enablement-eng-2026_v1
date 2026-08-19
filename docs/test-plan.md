@@ -661,7 +661,7 @@ follows:
 - `README.md` is a minimal entry point containing only purpose, prerequisites, local
   verification, deployment entry points, and links to the authoritative documents.
 - `docs/design.md` owns the deployed system design. It must remove pre-deployment
-  qualifiers; match the five image routes, Cloud Run's reserved live-health path,
+  qualifiers; match the five image routes, the Cloud Run-compatible health path,
   two primary Pub/Sub paths, shared dead-letter path, processing state machine,
   selected-provider native search, privacy boundary, and accepted deployment facts.
   It owns the repository's one Mermaid diagram, showing Gmail push/API, both primary
@@ -741,6 +741,43 @@ AUTH-SMOKE pass=false code=cloud_run_startup_probe_invalid elapsed_ms=1479
 No failing check was committed. The live failure was read-only and occurred before
 deployment mutation.
 
+### Health correction Green and live result
+
+The committed candidate passed the exact local image contract before deployment and
+was pushed once by immutable digest:
+
+```text
+IMMUTABLE-CANDIDATE pass=true commit=00d9f37 nonroot=true status=200 body_exact=true legacy_404=true
+IMAGE-PUSH pass=true digest=sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903
+```
+
+The saved Terraform plan allowed only the Cloud Run image and HTTP startup-probe
+change. Applying that plan created no resource and destroyed no resource:
+
+```text
+TF-PLAN pass=true add=0 change=1 destroy=0 replace=0 only=cloud_run_image_and_startup_probe
+TF-APPLY pass=true add=0 change=1 destroy=0
+DEPLOYMENT pass=true revision=alza-ai-00006-b4t traffic=100 digest=sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903 health_probe=true
+```
+
+An approved same-project executor identity made the non-mutating request from the
+project VPC. Both short-lived probe VMs, their boot disks, and their ephemeral
+addresses were deleted immediately afterward; the second run normalized serial
+console line endings so the successful health result also had an unambiguous zero
+exit status:
+
+```text
+AUTH-HEALTH pass=true authenticated=true internal=true status=200 body_exact=true
+PROBE-CLEANUP pass=true vm_absent=true disks_deleted=true ephemeral_ip_released=true
+TF-DRIFT pass=true add=0 change=0 destroy=0
+POST-DEPLOY pass=true probe_vms=0 probe_disks=0 scheduler_count=2 enabled=true service_watch_untouched=true
+```
+
+The current accepted private revision is `alza-ai-00006-b4t`, serving `100%` of
+traffic from immutable digest
+`sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903`.
+The previous issue 13 revision and digest remain available as rollback evidence.
+
 ### Issue 14 observed validation
 
 Expected Red, before the required material was authored:
@@ -777,18 +814,19 @@ short-lived probe resources were deleted, `renew-watch` was restored to its exac
 enabled `POST /jobs/renew-watch` configuration, and the service and Gmail watch were
 never stopped.
 
-Final read-only deployment and watch verification after cleanup:
+Final read-only deployment and watch verification after the health correction and
+cleanup:
 
 ```text
-PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=8325
-AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true scaling=true timeout=true quotas=true scheduler=true subscriptions=true budget=true public_invoker=false elapsed_ms=8573
-GCP acceptance: 2 passed in 16.94s
+PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=7207
+AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true scaling=true timeout=true health_probe=true quotas=true scheduler=true subscriptions=true budget=true public_invoker=false elapsed_ms=8562
+GCP acceptance: 2 passed in 15.85s
 LIVE-01-plain pass=true latency_ms=69000 reply_count=1 attachment_count=0 citation_count=0 state=completed thread=true headers=true labels=true
 LIVE-01-pdf pass=true latency_ms=90000 reply_count=1 attachment_count=1 citation_count=0 state=completed thread=true headers=true labels=true
 LIVE-01-audio pass=true latency_ms=69000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
 LIVE-01-image pass=true latency_ms=51000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
 LIVE-01-current pass=true latency_ms=62000 reply_count=1 attachment_count=0 citation_count=1 state=completed thread=true headers=true labels=true
-Gmail acceptance: 1 passed, 1 warning in 8.01s
+Gmail acceptance: 1 passed, 1 warning in 7.23s
 ```
 
 The Gmail command only reread the future watch, labels, and five existing accepted
@@ -797,17 +835,18 @@ source/reply pairs; it sent no message and did not renew or stop the watch.
 Final complete verification:
 
 ```text
-uv sync --locked: Resolved 69 packages; Audited 68 packages
+uv sync --locked: Resolved 69 packages in 2ms; Audited 68 packages in 0.72ms
+Health/documentation focused: 3 passed, 1 warning, 107 subtests passed in 0.76s
 Ruff format: 42 files already formatted
 Ruff check: All checks passed!
 mypy: Success: no issues found in 32 source files
-Integration: 8 passed, 1 warning in 2.42s
-Python/coverage: 267 passed, 3 skipped, 1 warning, 107 subtests passed in 4.05s; 88.72%
+Integration: 8 passed, 1 warning in 2.63s
+Python/coverage: 267 passed, 3 skipped, 1 warning, 107 subtests passed in 4.29s; 88.72%
 Terraform fmt: pass
 Terraform init: successfully initialized
 Terraform validate: configuration is valid
 Terraform test: 7 passed, 0 failed
-CONTAINER-SMOKE pass=true nonroot=true status=200 body_exact=true elapsed_ms=5049
+CONTAINER-SMOKE pass=true nonroot=true status=200 body_exact=true legacy_404=true elapsed_ms=5278
 git diff --check: exit 0, no output
 ```
 
@@ -855,10 +894,11 @@ Terraform: valid; 7 passed, 0 failed
 Container: pass=true nonroot=true status=200 body_exact=true elapsed_ms=4048
 ```
 
-The accepted deployment is private revision `alza-ai-00005-cfq`, serving `100%`
-traffic from immutable digest
+The issue 13 deployment accepted at that time was private revision
+`alza-ai-00005-cfq`, serving `100%` traffic from immutable digest
 `sha256:cf2013a13a82847e48812282a4217bd624e8e3ff6f45c313ad8ed2ced938957f`.
-Its final authenticated and operational results are:
+This block is historical; the health-correction result above is the current accepted
+revision. Its issue 13 authenticated and operational results were:
 
 ```text
 PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=7314

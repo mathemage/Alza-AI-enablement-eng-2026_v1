@@ -238,8 +238,8 @@ class DocumentationContractTests(unittest.TestCase):
             if term not in diagram:
                 problems.append(f"DESIGN-01 diagram:missing:{term}")
         for term in (
-            "alza-ai-00005-cfq",
-            "sha256:cf2013a13a82847e48812282a4217bd624e8e3ff6f45c313ad8ed2ced938957f",
+            "alza-ai-00006-b4t",
+            "sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903",
             "HTTP startup probe",
             "https://cloud.google.com/run/docs/configuring/healthchecks",
         ):
