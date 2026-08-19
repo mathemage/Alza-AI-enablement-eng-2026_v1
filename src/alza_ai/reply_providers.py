@@ -16,11 +16,11 @@ from google import genai
 from google.genai import types
 
 from alza_ai.domain import AttachmentInsight, Citation, GeneratedReply
+from alza_ai.quotas import DEFAULT_QUOTAS, RuntimeQuotas
 
 DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-opus-5"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MAX_OUTPUT_TOKENS = 2_048
 MAX_REPLY_CHARACTERS = 8_000
 MAX_USAGE_TOKENS = 1_000_000
 MAX_LATENCY_MS = 3_600_000
@@ -165,9 +165,15 @@ class _RawReply:
 class _BaseReplyProvider:
     provider: str
 
-    def __init__(self, *, model: str, clock: _Clock) -> None:
+    def __init__(self, *, model: str, clock: _Clock, quotas: RuntimeQuotas) -> None:
         self.model = model
         self._clock = clock
+        self._quotas = quotas
+
+    def _search_enabled(self, search_policy: SearchPolicy) -> bool:
+        return (
+            search_policy is not SearchPolicy.STABLE and self._quotas.search_calls > 0
+        )
 
     async def generate(
         self,
@@ -175,6 +181,10 @@ class _BaseReplyProvider:
         current_text: str,
         attachment_insights: Sequence[AttachmentInsight],
     ) -> GeneratedReply:
+        if self._quotas.reply_generation_calls < 1:
+            raise ReplyProviderError(
+                "reply_generation_quota_exhausted", RetryClassification.TERMINAL
+            )
         started = self._clock()
         payload = _reply_payload(current_text, attachment_insights)
         search_policy = classify_search_policy(current_text)
@@ -233,8 +243,9 @@ class GeminiReplyProvider(_BaseReplyProvider):
         model: str = DEFAULT_GEMINI_MODEL,
         client_factory: object = genai.Client,
         clock: _Clock = perf_counter,
+        quotas: RuntimeQuotas = DEFAULT_QUOTAS,
     ) -> None:
-        super().__init__(model=model, clock=clock)
+        super().__init__(model=model, clock=clock, quotas=quotas)
         factory = cast(_GeminiClientFactory, client_factory)
         self._client = cast(
             _GeminiClient,
@@ -254,13 +265,13 @@ class GeminiReplyProvider(_BaseReplyProvider):
         payload: str,
         search_policy: SearchPolicy,
     ) -> _RawReply:
-        search_enabled = search_policy is not SearchPolicy.STABLE
+        search_enabled = self._search_enabled(search_policy)
         response = await self._client.aio.models.generate_content(
             model=self.model,
             contents=payload,
             config=types.GenerateContentConfig(
                 system_instruction=_system_instruction(search_policy),
-                max_output_tokens=MAX_OUTPUT_TOKENS,
+                max_output_tokens=self._quotas.reply_output_tokens,
                 temperature=0,
                 tools=(
                     [types.Tool(google_search=types.GoogleSearch())]
@@ -294,8 +305,9 @@ class OpenRouterReplyProvider(_BaseReplyProvider):
         model: str = DEFAULT_OPENROUTER_MODEL,
         http_client: object,
         clock: _Clock = perf_counter,
+        quotas: RuntimeQuotas = DEFAULT_QUOTAS,
     ) -> None:
-        super().__init__(model=model, clock=clock)
+        super().__init__(model=model, clock=clock, quotas=quotas)
         self._api_key = api_key
         self._http_client = cast(_OpenRouterClient, http_client)
 
@@ -304,14 +316,14 @@ class OpenRouterReplyProvider(_BaseReplyProvider):
         payload: str,
         search_policy: SearchPolicy,
     ) -> _RawReply:
-        search_enabled = search_policy is not SearchPolicy.STABLE
+        search_enabled = self._search_enabled(search_policy)
         request_body: dict[str, object] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": _system_instruction(search_policy)},
                 {"role": "user", "content": payload},
             ],
-            "max_tokens": MAX_OUTPUT_TOKENS,
+            "max_tokens": self._quotas.reply_output_tokens,
             "temperature": 0,
             "stream": False,
         }
@@ -362,11 +374,13 @@ class OpenRouterReplyProvider(_BaseReplyProvider):
 def load_reply_provider(
     environ: Mapping[str, str] | None = None,
     *,
+    quotas: RuntimeQuotas | None = None,
     gemini_client_factory: object = genai.Client,
     openrouter_client_factory: object = httpx.AsyncClient,
     clock: _Clock = perf_counter,
 ) -> ReplyProvider:
     settings = os.environ if environ is None else environ
+    selected_quotas = RuntimeQuotas.load(settings) if quotas is None else quotas
     configured_provider = settings.get("RESPONSE_PROVIDER")
     if configured_provider is None:
         selected_provider = "gemini"
@@ -382,6 +396,7 @@ def load_reply_provider(
             model=model,
             client_factory=gemini_client_factory,
             clock=clock,
+            quotas=selected_quotas,
         )
 
     api_key = settings.get("OPENROUTER_API_KEY")
@@ -398,6 +413,7 @@ def load_reply_provider(
         model=model,
         http_client=client_factory(),
         clock=clock,
+        quotas=selected_quotas,
     )
 
 

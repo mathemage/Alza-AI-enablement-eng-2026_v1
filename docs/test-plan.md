@@ -192,6 +192,52 @@ behavior remains exhaustively unit-tested at its pure mapping boundary. Any netw
 filesystem, remote HTML, Gmail, cloud, or paid-provider access from the parser is a
 defect; the parser must emit no log record.
 
+### Runtime quota correction
+
+Issue 05 criterion 5 requires the model/output quotas to be real exposure controls.
+Terraform injected `MAX_ATTACHMENT_ANALYSIS_CALLS`, `MAX_REPLY_GENERATION_CALLS`,
+`MAX_REPLY_OUTPUT_TOKENS`, and `MAX_SEARCH_CALLS`, but no application code read them,
+so lowering a ceiling changed only the environment. The focused suite is
+`uv run pytest tests/test_quotas.py -q`, and it proves:
+
+- `RuntimeQuotas.load` keeps the design maximum for an absent variable, accepts a
+  lower value, and rejects a non-integer, negative, or above-maximum value with
+  `runtime_quota_invalid`; `RuntimeSettings.load` surfaces that as a
+  `RuntimeConfigurationError` and startup fails;
+- a lowered `MAX_ATTACHMENT_ANALYSIS_CALLS` makes the parser the production entry
+  point composes reject one attachment more than the ceiling with
+  `mime_too_many_attachments`, while the ceiling itself still parses;
+- a lowered `MAX_REPLY_OUTPUT_TOKENS` reaches the Gemini `max_output_tokens` and the
+  OpenRouter `max_tokens` of the single generation request;
+- `MAX_SEARCH_CALLS=0` sends no search tool for a forced-current request and returns
+  the unverified-current reply, and `MAX_REPLY_GENERATION_CALLS=0` calls no model and
+  raises terminal `reply_generation_quota_exhausted`.
+
+Each assertion names the Terraform variable whose ceiling it enforces, so a quota that
+stops being honored fails a test rather than drifting silently. Captured logs stay
+free of raw content.
+
+The accepted Red ran the focused suite against the composed production wiring before
+any application change. Every failure is a behavioral assertion about an ignored
+Terraform ceiling; no collection, import, or unrelated failure was accepted:
+
+```text
+uv run pytest tests/test_quotas.py -q
+exit 1
+15 failed, 1 warning in 0.88s
+
+AssertionError: assert 'parser' in {'store': ..., 'gmail': ..., 'analyzer': ..., 'provider': ..., ...}
+AssertionError: assert 2048 == 256
+  where 2048 = getattr(GenerateContentConfig(max_output_tokens=2048, ...), 'max_output_tokens', None)
+AssertionError: assert 2048 == 256
+AssertionError: assert [Tool(google_search=GoogleSearch())] is None
+Failed: DID NOT RAISE ReplyProviderError
+Failed: DID NOT RAISE RuntimeConfigurationError
+```
+
+No failing state was committed. After Green the same command reports
+`15 passed, 1 warning in 0.99s`.
+
 ## Issue 06 executable contract
 
 The focused suite is `uv run pytest tests/test_attachments.py -q`. Its first Red run

@@ -131,8 +131,16 @@ Gemini at its global endpoint after reply generation switches to OpenRouter.
 
 The accepted service uses maximum one instance, concurrency one, a `115s` request
 timeout, and per-message quota ceilings of five attachment calls, one reply call, one
-search-enabled call, and 2,048 output tokens. Lowering a ceiling is a reviewed deploy;
-raising it requires a design change. The `480 CZK` monthly budget alert is notification
+search-enabled call, and 2,048 output tokens. Each ceiling is a Terraform input the
+service reads at startup, so lowering one changes behavior on the next revision.
+Fewer attachment calls make a message carrying more attachments terminal with
+`mime_too_many_attachments`. `max_search_calls = 0` stops sending the search tool, so a
+request needing current information receives the unverified-current reply.
+`max_reply_generation_calls = 0` stops reply generation entirely and every message ends
+terminal with `reply_generation_quota_exhausted`. A lower output-token ceiling bounds
+the single generation request. An invalid value fails startup with
+`runtime_quota_invalid` rather than reverting to the maximum. Lowering a ceiling is a
+reviewed deploy; raising it requires a design change. The `480 CZK` monthly budget alert is notification
 only, not a hard cap. Scaling, quotas, provider limits, and the stop procedure are the
 actual cost controls; Gemini, search, Cloud Run, storage, and OpenRouter can incur
 charges.

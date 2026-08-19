@@ -165,7 +165,7 @@ def test_runtime_13_builds_the_existing_concrete_adapters(
     assert calls["storage"] == ((), {"bucket_name": "scratch-bucket"})
     assert calls["model"] == ((), {"project_id": PROJECT, "model": "gemini-3.6-flash"})
     assert calls["analyzer"] == ((storage, model), {})
-    assert calls["provider"] == ((settings.environment,), {})
+    assert calls["provider"] == ((settings.environment,), {"quotas": settings.quotas})
     assert calls["publisher"] == ((pubsub_client,), {"topic": settings.work_topic})
     coordinator_call = calls["coordinator"]
     synchronizer_call = calls["synchronizer"]
