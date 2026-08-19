@@ -3,9 +3,9 @@
 ## Purpose and authority
 
 This document is the test contract for the backend-only Gmail assistant described in
-`plan.md`. It maps the frozen requirements to the test level that must prove them.
-Later issues may add exact commands and observed results, but they must update this
-plan before changing behavior and must not weaken an existing acceptance gate.
+`plan.md`. It maps the finalized requirements through backlog item 14 to the test
+level and observed evidence that prove them. Any later behavior change must update
+this plan first and must not weaken an existing acceptance gate.
 
 ## TDD evidence contract
 
@@ -576,20 +576,22 @@ no browser UI; live HTTP is its equivalent end-to-end layer.
 
 ## Issue 13 executable contract
 
-Issue 13 uses opt-in checks that are excluded from default pytest discovery and CI.
-Their only configuration is an ignored file below `credentials/`; it contains exact
-operator-selected resource identifiers and paths to local secret material, never
-secret values in command arguments. The checks reject unexpected identities,
-projects, billing links, regions, mailboxes, consent state, image tags, public IAM,
-or generated evidence paths before calling a mutating command.
+Issue 13 uses opt-in checks that default discovery skips when `--live-config` is
+absent, so CI makes no live call. Their only configuration is an ignored file below
+`credentials/`; it contains exact operator-selected resource identifiers and paths
+to local secret material, never secret values in command arguments. The checks reject
+unexpected identities, projects, billing links, regions, mailboxes, consent state,
+image tags, public IAM, or generated evidence paths before any deployment mutation.
 
-The preflight command authenticates without mutation and requires all of these facts
-to match the ignored configuration: active CLI and ADC account, active project and
+The preflight command authenticates without mutation and requires these facts to
+match the ignored configuration: active CLI and ADC account, active project and
 numeric project number, enabled link to the exact open billing account,
-`europe-west3`, dedicated Gmail profile, OAuth consent status, approved billing-
-currency monthly alert, and explicit trial-credit/minimal-cost approval. The
-operator-confirmed mailbox and live sender are compared in memory and printed only as
-`mailbox_match=true` and `sender_match=true`.
+`europe-west3`, required operator identifiers, and explicit minimal-cost approval.
+Its sanitized `mailbox_confirmed=true` field means that the required mailbox
+identifier is configured; it does not call Gmail. The separate Gmail verifier checks
+the exact profile, OAuth consent status, modify-only scope, labels, watch, sender,
+and accepted cases, and prints only sanitized pass fields. The authenticated smoke
+checks the configured billing currency and monthly alert against Cloud Billing.
 
 Red adds the complete read-only authenticated smoke and Gmail acceptance verifier
 before infrastructure exists, then runs it with authenticated operator configuration.
@@ -642,11 +644,131 @@ Refactor permits only removal of duplicated configuration or documentation ambig
 It reruns the preflight, focused smoke, all five live cases, Ruff, mypy, the full
 Python suite at `85%` coverage, offline Terraform formatting/init/validation/tests,
 the built-container smoke, and `git diff --check`. A final focused pass rechecks
-private IAM, authenticated health, future watch expiration, enabled Scheduler jobs,
+private IAM, Ready/traffic state, the accepted-image health contract, authenticated
+operational-route reachability, future watch expiration, enabled Scheduler jobs,
 healthy subscriptions, empty dead-letter backlog, and `100%` traffic to the accepted
 digest. The service and Gmail watch remain running. If any Green/live gate fails,
 rollback pauses Scheduler, stops the watch, disables push delivery, restores the
 previous digest when present, and never changes ingress or grants a public invoker.
+
+## Issue 14 executable contract
+
+Issue 14 closes the MVP with documentation and documentation-focused validation
+only. Before authoring, the required documents and their authority are frozen as
+follows:
+
+- `README.md` is a minimal entry point containing only purpose, prerequisites, local
+  verification, deployment entry points, and links to the authoritative documents.
+- `docs/design.md` owns the deployed system design. It must remove pre-deployment
+  qualifiers; match the five image routes, Cloud Run's reserved live-health path,
+  two primary Pub/Sub paths, shared dead-letter path, processing state machine,
+  selected-provider native search, privacy boundary, and accepted deployment facts.
+  It owns the repository's one Mermaid diagram, showing Gmail push/API, both primary
+  topic/subscription paths, their shared dead-letter path, all five image routes,
+  Firestore, scratch storage, Gemini/Google Search, the OpenRouter alternative, both
+  Scheduler jobs, secrets, logging, and monitoring.
+- `docs/operations.md` owns routine operation and teardown: OAuth and watch renewal,
+  replay, terminal errors, dead letters, provider switching, quotas and budget
+  alerts, rollback, watch disablement, regional resource deletion, and residual
+  Gmail, Firestore, Pub/Sub, scratch, registry, secret, telemetry, budget/API, OAuth,
+  provider, and ignored local-state residuals.
+- `docs/presentation.md` is the authoritative Markdown presentation. It covers the
+  problem, deployed flow, five-case proof, privacy/reliability, limitations, cost,
+  operations, and teardown without embedding runbook instructions.
+- `docs/demo-runbook.md` is a rehearsable `10-15` minute sequence with preflight,
+  read-only verification of all five accepted live cases, explicit timings and
+  expected outcomes, clearly historical sanitized fallback evidence, limitations,
+  costs, and teardown. It links to rather than duplicates the presentation and
+  operations details.
+
+The focused validator is `uv run pytest tests/test_documentation.py -q`. Red must
+reach that validator and report the absent `README.md`, operations, presentation,
+runbook, Mermaid flow, or a specific stale pre-deployment marker. A dependency,
+credential, network, or unrelated test failure is not acceptable Red, and the
+failing state is not committed. Green requires the smallest text that satisfies the
+contracts, exactly one Mermaid block in the repository documentation, a parsed demo
+duration within `10-15` minutes, and no frontend or PDF export dependency.
+
+After Refactor, rerun the focused validator, the current CI-equivalent Python,
+coverage, Ruff, mypy, Terraform, integration, and container gates. Reconcile the
+health boundary explicitly: the accepted digest must return exact
+`200 {"status":"ok"}` locally, while an authenticated request to deployed `/healthz`
+must be recorded as Cloud Run's reserved-path `404`, not invented as a live `200`.
+Use Ready/traffic plus a non-mutating authenticated route control for production
+serving evidence, then read the future-dated Gmail watch, enabled Scheduler jobs,
+private IAM, and accepted traffic. Record exact sanitized results here and in the PR.
+Do not renew or stop a healthy watch during the check; leave the accepted private
+service and watch running.
+
+### Issue 14 observed validation
+
+Expected Red, before the required material was authored:
+
+```text
+uv run pytest tests/test_documentation.py -q
+exit 1
+1 failed, 1 passed, 107 subtests passed in 0.06s
+```
+
+The failure named the absent `README.md`, operations guide, presentation, demo
+runbook, Mermaid flow, and stale deployment text. No failing check was committed.
+
+Focused Refactor result:
+
+```text
+uv run pytest tests/test_documentation.py -q
+2 passed, 107 subtests passed in 0.02s
+```
+
+The accepted digest and authenticated live controls exposed and reconciled the Cloud
+Run reserved-path boundary without changing the application or accepted revision:
+
+```text
+DEPLOYED-DIGEST-LOCAL pass=true status=200 body_exact=true
+AUTH-HEALTH pass=false authenticated=true internal=true status=404 body_exact=false
+AUTH-ROUTE-CONTROL get_post_only=405 post_health=404
+```
+
+The authenticated `404` is the expected Cloud Run interception of `/healthz`, not an
+application-health pass. The `405` control proves the authenticated GET reached the
+FastAPI revision without invoking the POST-only reconciliation operation. All
+short-lived probe resources were deleted, `renew-watch` was restored to its exact
+enabled `POST /jobs/renew-watch` configuration, and the service and Gmail watch were
+never stopped.
+
+Final read-only deployment and watch verification after cleanup:
+
+```text
+PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=8325
+AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true scaling=true timeout=true quotas=true scheduler=true subscriptions=true budget=true public_invoker=false elapsed_ms=8573
+GCP acceptance: 2 passed in 16.94s
+LIVE-01-plain pass=true latency_ms=69000 reply_count=1 attachment_count=0 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-pdf pass=true latency_ms=90000 reply_count=1 attachment_count=1 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-audio pass=true latency_ms=69000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-image pass=true latency_ms=51000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-current pass=true latency_ms=62000 reply_count=1 attachment_count=0 citation_count=1 state=completed thread=true headers=true labels=true
+Gmail acceptance: 1 passed, 1 warning in 8.01s
+```
+
+The Gmail command only reread the future watch, labels, and five existing accepted
+source/reply pairs; it sent no message and did not renew or stop the watch.
+
+Final complete verification:
+
+```text
+uv sync --locked: Resolved 69 packages; Audited 68 packages
+Ruff format: 42 files already formatted
+Ruff check: All checks passed!
+mypy: Success: no issues found in 32 source files
+Integration: 8 passed, 1 warning in 2.42s
+Python/coverage: 267 passed, 3 skipped, 1 warning, 107 subtests passed in 4.05s; 88.72%
+Terraform fmt: pass
+Terraform init: successfully initialized
+Terraform validate: configuration is valid
+Terraform test: 7 passed, 0 failed
+CONTAINER-SMOKE pass=true nonroot=true status=200 body_exact=true elapsed_ms=5049
+git diff --check: exit 0, no output
+```
 
 ## Test levels and phase gates
 
@@ -657,12 +779,12 @@ previous digest when present, and never changes ingress or grants a public invok
 | Terraform | Regional resources, IAM, authentication, scaling, lifecycle, quotas, and budgets with mocked providers | Formatting, offline initialization, validation, and Terraform tests pass; CI never applies. |
 | Integration | Public HTTP endpoints through a running `uvicorn` process with deterministic fakes | Complete success, retry, terminal, redelivery, and recovery flows pass over HTTP. This is the Playwright-equivalent layer because there is no browser UI. |
 | Container | The built non-root image and its production entry point | Image builds, starts, serves `GET /healthz`, and stops cleanly. |
-| Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | An authorized identity reaches health; anonymous access fails; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
+| Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | Ready/traffic and an authenticated operational route prove serving; the reserved live `/healthz` `404` agrees with the accepted-image `200` contract; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
-The backlog item 12 CI gate runs Ruff formatting and linting, strict mypy, the live
-loopback black-box suite, the complete Python suite with at least **85% line coverage**,
-the built-container smoke check, and offline Terraform checks. It uses
+The current CI gate runs Ruff formatting and linting, strict mypy, the loopback
+black-box suite, the complete Python suite with at least **85% line coverage**, the
+built-container smoke check, and offline Terraform checks. It uses
 only deterministic fakes and mocked providers.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
@@ -764,7 +886,7 @@ and its commit and unmerged PR satisfy the repository contract.
 | 11 | Retry, terminal, security, redaction, deadline, and observability gates pass. |
 | 12 | Black-box HTTP, complete fake flows, coverage, CI, and container smoke pass. |
 | 13 | Approved infrastructure deployment, authenticated smoke, and five live cases pass. |
-| 14 | Deployed facts, operations, teardown, demo, and final health/watch evidence agree. |
+| 14 | Deployed facts, operations, teardown, demo, and final health-boundary/watch evidence agree. |
 
 ## Acceptance matrix
 
@@ -775,13 +897,13 @@ requirement cannot silently lose coverage.
 | --- | --- | --- | --- |
 | DOC-01 | Required architecture/test sections exist, remain aligned, and introduce no application, infrastructure, frontend, or generated evidence | Unit/documentation validation | 01 |
 | TOOL-01 | Python 3.14, FastAPI, `uv`, committed lock, pytest/httpx, Ruff, mypy, Docker, Terraform, GitHub Actions, `src/`, and `tests/` form a clean-checkout backend-only toolchain | Unit, container, CI | 02, 12 |
-| API-01 | Only `GET /healthz`, `POST /events/gmail`, `POST /jobs/process-message`, `POST /jobs/renew-watch`, and `POST /jobs/reconcile-unread` are exposed | Unit, integration, authenticated smoke | 02, 10, 13 |
-| API-02 | Stable health payload; deployed endpoints require Cloud Run IAM and reject anonymous callers | Integration, container, authenticated smoke | 02, 03, 12, 13 |
+| API-01 | The image declares only `GET /healthz`, `POST /events/gmail`, `POST /jobs/process-message`, `POST /jobs/renew-watch`, and `POST /jobs/reconcile-unread`; Cloud Run reserves live `/healthz` and forwards the four operational routes | Unit, integration, authenticated smoke | 02, 10, 13, 14 |
+| API-02 | The accepted image has a stable health payload; deployed operational endpoints require Cloud Run IAM, reject anonymous callers, and use Ready/traffic plus authenticated route evidence because live `/healthz` is platform-reserved | Integration, container, authenticated smoke | 02, 03, 12-14 |
 | DOMAIN-01 | `InboundEmail`, `Attachment`, `AttachmentInsight`, `Citation`, and `GeneratedReply` carry exactly the provider-neutral, bounded fields and never cross persistence boundaries | Unit, contract, integration | 04-12 |
 | PORT-01 | `GmailGateway`, `AttachmentAnalyzer`, `ReplyProvider`, `WorkPublisher`, and `ProcessingStore` fakes and adapters satisfy shared contracts | Contract, integration | 04, 06, 07, 09, 10, 12 |
 | GCP-01 | Cloud Run, Firestore, scratch storage, Artifact Registry, Scheduler, and user-managed secret replicas use `europe-west3`; Gemini uses `global` | Terraform, authenticated smoke | 03, 13 |
 | GCP-02 | Exactly two primary topic/subscription pairs and one shared dead-letter path exist with dedicated authenticated callers and least privilege | Terraform, integration, authenticated smoke | 03, 11, 13 |
-| GCP-03 | Zero minimum and maximum `2` Cloud Run instances, `115s` request timeout, one-day scratch lifecycle, bounded quotas, and budget alerts are configured | Terraform, authenticated smoke | 03, 13 |
+| GCP-03 | Terraform bounds Cloud Run to zero minimum and maximum `1..2` (default `2`); the accepted deployment uses `0/1`, `115s`, one-day scratch lifecycle, bounded quotas, and budget alerts | Terraform, authenticated smoke | 03, 13, 14 |
 | GCP-04 | `terraform fmt -check -recursive`, offline init, validate, and mocked tests pass; CI has no apply and secret payloads never enter state | Terraform, CI | 03, 12 |
 | OAUTH-01 | Dedicated mailbox bootstrap requests offline consent and only `https://www.googleapis.com/auth/gmail.modify`; token destination is explicit and secure | Unit, contract, live Gmail | 04, 13 |
 | OAUTH-02 | Consent status, Testing seven-day risk, Production transition, watch activation/renewal, revocation, and reauthorization are exercised or operator-verified | Contract, authenticated smoke, live Gmail | 04, 10, 13 |
@@ -809,12 +931,16 @@ requirement cannot silently lose coverage.
 | FAIL-02 | Terminal MIME/policy failures persist terminal state, apply `AI/Error`, leave unread, and acknowledge only after terminal handling succeeds | Unit, contract, integration | 09, 11, 12 |
 | FAIL-03 | Exhausted delivery reaches the shared dead-letter path and is observable without content; terminal records are skipped by reconciliation | Terraform, integration, authenticated smoke | 03, 10, 11, 13 |
 | SEC-01 | Sender allowlist, self/automated/bulk loop rejection, HTML escaping, citation scheme/host validation, and secret handling resist unsafe inputs | Unit, integration | 04, 08, 11, 12 |
-| PRIV-01 | Firestore, Pub/Sub, logs, Terraform state, HTTP responses, and evidence contain no bodies, prompts, replies, attachment bytes, extracted text, transcripts, insights, addresses, tokens, or secrets | Unit, Terraform, integration, authenticated smoke, live Gmail | 03-13 |
+| PRIV-01 | Gmail notifications contain only the Gmail-required mailbox address/history ID; `email-work`, Firestore, logs, Terraform state, HTTP responses, and evidence contain no bodies, prompts, replies, attachment bytes, extracted text, transcripts, insights, addresses, tokens, or secrets | Unit, Terraform, integration, authenticated smoke, live Gmail | 03-14 |
 | OBS-01 | Sanitized logs contain correlation/opaque message IDs, stage/state, provider/model, retry class, error code, and per-stage/total latency only | Unit, integration, authenticated smoke | 11-13 |
 | TIME-01 | Internal processing stops by `105s`, below the `115s` request timeout; every live case finishes within `120s` | Unit, integration, authenticated smoke, live Gmail | 03, 11-13 |
 | COST-01 | Scaling, bounded retries, output/search/media quotas, trial-credit exposure, and budget-alert-not-hard-cap semantics are tested and operator-confirmed | Unit, Terraform, authenticated smoke | 03, 11, 13 |
 | LIVE-01 | Plain text; PDF; MP3+WAV; JPEG+PNG; and forced-current grounded-citation messages each get exactly one reply, expected labels/state, and sanitized evidence | Live Gmail | 13 |
-| OPS-01 | Final docs, one Mermaid flow, rollback/teardown, provider switching, dead-letter handling, and a rehearsable `10-15` minute Markdown demo match deployed facts without PDF tooling | Documentation validation, authenticated smoke | 14 |
+| DOC-02 | `README.md` stays limited to purpose, prerequisites, local verification, deployment entry points, and authoritative-document links | Documentation validation | 14 |
+| DESIGN-01 | The final design matches deployed routes, resources, state/search/privacy behavior and owns exactly one readable Mermaid system flow | Documentation validation, authenticated smoke | 14 |
+| OPS-01 | Operations covers watch/OAuth renewal, replay, terminal/dead-letter recovery, provider switching, quotas, budgets, rollback, ordered teardown, and residual data | Documentation validation | 14 |
+| DEMO-01 | The authoritative Markdown presentation and parsed `10-15` minute five-case runbook include preflight, timings, outcomes, sanitized fallback, limitations, costs, and teardown without PDF tooling | Documentation validation | 14 |
+| FINAL-01 | Focused and complete suites are green; the authenticated reserved-path health result, accepted-image health payload, future watch, enabled Scheduler, private IAM, route reachability, and accepted traffic agree without stopping the service or watch | Documentation validation, authenticated smoke | 14 |
 
 ## Issue 01 validation evidence
 
