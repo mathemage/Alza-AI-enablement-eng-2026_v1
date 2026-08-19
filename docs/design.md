@@ -1,7 +1,6 @@
 # Gmail Assistant Architecture
 
-Status: frozen baseline updated through backlog item 12. Later issues must update
-this document and `docs/test-plan.md` in their Spec phase before changing a decision.
+Status: deployed MVP baseline finalized through backlog item 14.
 
 ## Scope and non-goals
 
@@ -10,41 +9,11 @@ It reads an eligible current message, understands supported attachments, optiona
 grounds time-sensitive answers with live search, and sends one concise reply in the
 original Gmail thread.
 
-The implementation baseline is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, Ruff,
-mypy, Docker, Terraform, and GitHub Actions. Application packages live under `src/`,
-tests under `tests/`, and `uv.lock` is committed. Backlog item 04 adds only the Gmail
-gateway boundary, its deterministic fake and mocked adapter tests, and the interactive
-operator OAuth bootstrap command. Backlog item 05 adds only immutable email domain
-values, synthetic fixtures, and a pure Gmail `format=full` MIME parser. Backlog item
-06 adds only bounded attachment insights, regional scratch-storage and Gemini
-multimodal adapters, and the asynchronous attachment analyzer. Backlog item 07 adds
-only provider-neutral generated replies, one shared reply contract, Gemini and
-OpenRouter reply adapters, and selected-provider configuration. Backlog item 08 adds
-only deterministic live-search policy, the selected provider's native search tool,
-and application-owned citation validation and rendering. Backlog item 09 adds only
-the one-message coordinator and route, transactional Firestore processing records,
-deterministic threaded sending, metadata-only send recovery, and success/error label
-transitions. It does not activate a watch, synchronize Gmail history, deploy, or add
-frontend implementation.
-
-Backlog item 10 adds only Gmail push-envelope validation, serialized mailbox-history
-synchronization, metadata-only work publication, transactional cursor/checkpoint
-state, daily watch renewal, and bounded unread reconciliation. It does not construct
-deployment adapters from environment variables, add retry/observability policy beyond
-this synchronization boundary, deploy, or add frontend implementation.
-
-Backlog item 11 adds only the processing failure boundary, sender/loop policy,
-`105s` internal deadline, safe-rendering regression contract, and content-free
-structured processing events. It reuses the existing effectively-once state machine,
-provider-owned citation normalization, and application-owned HTML rendering. It does
-not construct deployment adapters, change infrastructure, deploy, add a frontend, or
-add another retry queue.
-
-Backlog item 12 adds only the credential-free black-box HTTP harness, complete
-deterministic fake-adapter flows, cross-boundary work correlation, line-coverage gate,
-and built-container smoke. It does not construct deployment adapters, call live or
-paid services, deploy, add frontend technology, or change the frozen production HTTP
-surface.
+The implementation is Python `3.14`, FastAPI, `uv`, `pytest`, `httpx`, Ruff, mypy,
+Docker, Terraform, and GitHub Actions. Application packages live under `src/`, tests
+under `tests/`, and `uv.lock` is committed. Production composes the same tested Gmail,
+MIME, attachment, provider, processing, synchronization, persistence, and telemetry
+boundaries used by deterministic fakes and mocked adapters.
 
 The MVP has no browser UI or other frontend technology, full-thread conversational
 context, RAG, scraper, separate search service, application-level provider fallback,
@@ -58,7 +27,7 @@ only dependency resolution input in local verification and CI. The importable
 application is `alza_ai.main:app`. FastAPI's OpenAPI, Swagger UI, and ReDoc routes are
 disabled so the scaffold does not expose endpoints outside the frozen HTTP surface.
 
-The exact local setup and verification commands through backlog item 12 are:
+The exact local setup and verification commands are:
 
 ```text
 uv sync --locked
@@ -84,11 +53,47 @@ Ruff format/check, mypy, black-box, complete pytest, coverage, and offline Terra
 commands. Coverage measures `alza_ai` line execution and fails below `85%`; default
 tests inject deterministic fakes and have no credential, cloud, live-search, or paid
 provider path. CI builds the Dockerfile, confirms its configured user is neither
-empty nor root, starts the production entry point, waits for exact `GET /healthz`
+empty nor root, starts the production entry point, waits for exact `GET /health`
 status/body, and always stops the container. The image listens on port `8080` and
 includes no development dependency or credential.
 
 ## System flow and data ownership
+
+```mermaid
+flowchart LR
+    gmail["Dedicated mailbox<br/>Gmail API"]
+    notifications["Pub/Sub topic<br/>gmail-notifications"]
+    notificationPush["Push subscription<br/>gmail-notifications-push"]
+    work["Pub/Sub topic<br/>email-work"]
+    workPush["Push subscription<br/>email-work-push"]
+    deadLetter["Shared topic<br/>dead-letter"]
+    deadLetterMonitor["Pull subscription<br/>dead-letter-monitor"]
+    service["Private Cloud Run<br/>alza-ai"]
+    smoke["Health validation"]
+    scheduler["Cloud Scheduler<br/>renew + reconcile"]
+    firestore[("Firestore<br/>metadata and state")]
+    scratch[("Regional scratch<br/>Cloud Storage")]
+    gemini["Gemini 3.6 Flash<br/>Google Search"]
+    openrouter["OpenRouter alternative<br/>openrouter:web_search"]
+    secrets["Secret Manager<br/>OAuth and provider secrets"]
+    observability["Cloud Logging<br/>Cloud Monitoring"]
+
+    gmail -->|"Gmail push"| notifications --> notificationPush
+    notificationPush -->|"POST /events/gmail"| service
+    service -->|"metadata-only work"| work --> workPush
+    workPush -->|"POST /jobs/process-message"| service
+    notificationPush -. "exhausted delivery" .-> deadLetter
+    workPush -. "exhausted delivery" .-> deadLetter --> deadLetterMonitor
+    smoke -.->|"startup probe + authenticated GET /health"| service
+    scheduler -->|"POST /jobs/renew-watch"| service
+    scheduler -->|"POST /jobs/reconcile-unread"| service
+    service <--> firestore
+    service --> scratch --> gemini
+    service -->|"active reply + native search"| gemini
+    service -. "reviewed reply-provider alternative" .-> openrouter
+    secrets --> service --> observability
+    service <-->|"read, watch, labels, threaded reply"| gmail
+```
 
 ### Primary push and work path
 
@@ -160,29 +165,32 @@ temporary scratch object described above.
 
 ## HTTP surface and authenticated callers
 
-The service exposes exactly five routes. Cloud Run IAM authenticates every deployed
-request. There is no `allUsers` invoker, public route, shared webhook secret, or
-alternate application endpoint.
+The application image declares exactly five routes. Cloud Run IAM authenticates every
+forwarded deployed request. There is no `allUsers` invoker, public route, shared
+webhook secret, or alternate application endpoint. All five routes are compatible
+with the Cloud Run URL surface.
 
-| Route | Authorized caller and behavior | Successful/terminal result | Retryable result |
+| Route | Configured caller and behavior | Successful/terminal result | Retryable result |
 | --- | --- | --- | --- |
-| `GET /healthz` | Approved smoke/operator identity; liveness only, with no dependency or secret details | `200` with exactly `{"status":"ok"}` | `503` only when the process cannot serve work |
+| `GET /health` | Cloud Run HTTP startup probe, local/container smoke, and approved authenticated internal callers | `200` with exactly `{"status":"ok"}` | No application `503`; a process that cannot serve has no successful response |
 | `POST /events/gmail` | Dedicated `gmail-notifications-push` OIDC identity; validate Pub/Sub envelope and configured mailbox, then synchronize history | `204` after complete publish/cursor commit; duplicate, malformed, or wrong-mailbox envelopes are sanitized terminal acknowledgments | `503` for Gmail, transaction, lease, or publication failures |
 | `POST /jobs/process-message` | Dedicated `email-work-push` OIDC identity; process one versioned metadata work item | `204` for success, a final duplicate, or a terminal outcome only after terminal handling | `503` for an in-flight duplicate, while a transient failure remains retryable, or when terminal bookkeeping cannot complete |
 | `POST /jobs/renew-watch` | Dedicated Scheduler OIDC identity; renew the configured mailbox watch idempotently | `204` | `503` for a transient Gmail or persistence failure |
 | `POST /jobs/reconcile-unread` | Dedicated Scheduler OIDC identity; run one bounded reconciliation page set | `204` after its bounded checkpoint is durable | `503` when safe progress/checkpointing fails |
 
 OIDC tokens use the exact service URL as audience. Cloud Run performs token and IAM
-validation; handlers additionally bind the configured caller identity to the expected
-route. Terraform grants `roles/run.invoker` only to the three logical invoker
-identities and an explicitly selected smoke identity. The runtime identity is not a
-public invoker.
+validation. Terraform grants service-wide `roles/run.invoker` to the three logical
+invoker identities and the smoke identity; each Pub/Sub or Scheduler source is
+configured with its dedicated identity, but the application does not inspect caller
+claims or enforce a different identity per route. The runtime identity is not an
+invoker and no public principal has access.
 
-At the application boundary, `GET /healthz` performs no cloud, credential, or
-downstream dependency check. A successful response has status `200`, content type
-`application/json`, and the exact UTF-8 body `{"status":"ok"}`. Deployment-level IAM
-remains responsible for authenticating the caller; the local ASGI route itself adds
-no alternate authentication behavior.
+At the application boundary, `GET /health` performs no cloud, credential, or
+downstream dependency check. A successful local, accepted-image, startup-probe, or
+authenticated internal response has status `200`, content type `application/json`,
+and the exact UTF-8 body `{"status":"ok"}`. The former `/healthz` route is absent
+because Cloud Run reserves some paths ending in `z`. Production proof combines that
+exact authenticated response with revision Ready/traffic and private IAM.
 
 For Pub/Sub, any `2xx` is an acknowledgment and a non-`2xx` requests redelivery.
 Poison envelopes that cannot identify a source message are acknowledged after a
@@ -263,8 +271,8 @@ message data, MIME bytes, email address, or credential.
    local output with mode `0600` and without overwriting an existing path. The output
    contains only the refresh token and exact scope; the access token and OAuth client
    secret remain excluded. The command prints only a generic completion or sanitized
-   error, never a credential. Secret Manager upload remains an explicit deployment
-   operation in backlog item 13.
+   error, never a credential. The accepted deployment stores the client and refresh
+   documents as Secret Manager versions added outside Terraform state.
 3. An external OAuth app left in Testing can issue refresh tokens that expire after
    seven days. Before unattended use, the operator moves the consent configuration
    to Production as appropriate and verifies the dedicated account remains granted.
@@ -453,6 +461,13 @@ adapter construction, so only the selected provider's credentials are validated 
 only its client exists. `OPENROUTER_API_KEY` must be non-empty only for OpenRouter.
 An absent model override uses the selected default above; a present blank override is
 a sanitized configuration error.
+
+The accepted production revision selects Gemini. Although the application adapter
+supports OpenRouter, the current Terraform configuration pins
+`RESPONSE_PROVIDER=gemini` and does not mount `OPENROUTER_API_KEY`; changing the live
+reply provider therefore requires reviewed secret/environment wiring and a new
+digest-pinned revision. It is not a runtime toggle or fallback. Attachment analysis
+continues to use Gemini even when a future revision selects OpenRouter for replies.
 
 Both adapters serialize one application-owned instruction plus an object containing
 only `current_email_text` and ordered `attachment_insights`. Each insight contains its
@@ -764,34 +779,23 @@ all cases. Local and CI commands are identical.
 
 ## Live deployment and acceptance
 
-Issue 13 is an explicit operator-approved, local-only deployment. Before the first
-GCP write, one authenticated preflight must compare the active Google identity and
-ADC identity with the operator-selected account; resolve the selected project ID to
-its exact project number and active lifecycle; prove that the selected open billing
-account is linked to that project; and require exact confirmation of
-`europe-west3`, the dedicated Gmail mailbox, OAuth consent status, and the
-trial-credit/minimal-cost exposure. The approved monthly alert is denominated in the
-billing account currency and is not a hard spending cap. The check rejects ambient,
-missing, or mismatched values and never chooses a project, account, region, or
-mailbox by name inference.
+The operator-approved deployment completed on 2026-08-19 after exact identity,
+project, billing, region, mailbox, OAuth-consent, and cost confirmation. Deployment
+inputs, Terraform plans/state, OAuth material, API keys, fixtures, and live output
+remain under ignored `credentials/`; CI never plans or applies infrastructure.
+Secret versions were added outside Terraform state and the image was deployed by
+immutable registry digest.
 
-Exact deployment inputs live only in an ignored operator configuration under
-`credentials/`; Terraform variable files, plans, state, OAuth client JSON, refresh
-tokens, API keys, generated media, and acceptance output are also ignored. Commands
-receive the project and region explicitly. No credential, mailbox address, billing
-identifier, raw message content, generated reply, attachment data, prompt, token, or
-secret is written to Git, Terraform state, container layers, Cloud Logging, or
-acceptance evidence.
-
-Terraform is applied interactively outside CI. A bootstrap target creates only the
-required APIs, Artifact Registry repository, and empty regional secret containers so
-the image and secret versions can be supplied without entering Terraform state. The
-production image is built once, pushed to the regional repository, resolved to its
-registry `sha256` digest, and the complete apply references only that immutable
-digest. Secret versions are added with `gcloud` from ignored local files or standard
-input. The complete apply uses maximum instances `1` for the smallest live revision,
-keeps minimum instances `0`, and preserves internal-only ingress and service-account
-invocation; any `allUsers` or `allAuthenticatedUsers` binding is a hard failure.
+| Accepted deployment fact | Value |
+| --- | --- |
+| Cloud Run revision | `alza-ai-00006-b4t`, `100%` traffic |
+| Image | `sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903` |
+| Access and region | Internal-only, IAM required, no public principal, `europe-west3` |
+| Runtime | Gemini reply provider, minimum/maximum instances `0/1`, concurrency `1`, timeout `115s` |
+| Per-message ceilings | Attachment/generation/search calls `5/1/1`; reply output `2048` tokens |
+| Operations | Scheduler jobs enabled, push subscriptions active, future-dated Gmail watch |
+| Cost control | Project budget alert `480 CZK`; an alert is not a hard spending cap |
+| Health boundary | HTTP startup probe targets `/health`; accepted-image and authenticated same-project internal GET both return exact `200 {"status":"ok"}` |
 
 The production entry point composes only existing adapters: Gmail with the verified
 refresh token and OAuth client, Firestore processing and synchronization stores,
@@ -808,11 +812,11 @@ digest-pinned, exactly one revision receives traffic, ingress is internal-only,
 minimum instances are `0`, maximum instances are `1`, concurrency is `1`, timeout is
 `115s`, the four application ceilings match the approved values, and IAM contains no
 public principal. The accepted immutable image runs locally as its non-root user and
-returns exact `200 {"status":"ok"}`. In production, ready/traffic status and successful
-authenticated internal calls to `renew-watch`, `reconcile-unread`, Gmail push, and
-work processing prove the serving path without opening ingress; anonymous invocation
-remains unauthorized. Both Scheduler jobs must be enabled with their frozen schedules
-and OIDC audience, both push subscriptions must be healthy with their frozen
+returns exact `200 {"status":"ok"}` from `GET /health`. The configured HTTP startup
+probe uses that same route, and an authenticated same-project internal GET returns
+the exact status/body without opening ingress; anonymous invocation remains
+unauthorized. Both Scheduler jobs must be enabled with their frozen schedules and
+OIDC audience. Both push subscriptions must be healthy with their frozen
 retry/dead-letter controls, and the dead-letter monitor must remain available.
 
 Gmail OAuth requests offline consent and only
@@ -821,9 +825,10 @@ profile equals the explicitly confirmed dedicated mailbox before its refresh tok
 is stored. Consent in Testing mode is accepted only with an explicit seven-day token
 risk confirmation; otherwise the operator confirms Production status. The runtime
 ensures the two application label IDs correspond to `AI/Processed` and `AI/Error`.
-Only after the private health smoke passes does the operator invoke the authenticated
-renew-watch route. Acceptance requires a future Gmail watch expiration recorded with
-an immutable activation time and an exact `gmail-notifications` topic.
+Only after the private IAM, Ready/traffic, accepted-image health, and authenticated
+`GET /health` checks pass does the operator invoke the `renew-watch` route.
+Acceptance requires a future Gmail watch expiration recorded with an immutable
+activation time and an exact `gmail-notifications` topic.
 
 The five live cases are sent from one explicitly approved non-bot address and carry
 unique opaque case IDs used only in memory:
@@ -846,16 +851,10 @@ missing attachment coverage, invalid citation, terminal/retry state, or latency 
 reply count, attachment count, citation count, final state, and boolean label/thread
 checks; generated evidence files are forbidden.
 
-Rollback never makes the service public. Before watch activation, a failed revision
-is removed from traffic and the prior healthy digest is restored when one exists.
-After activation, rollback first pauses both Scheduler jobs, stops the Gmail watch,
-and disables push delivery before moving traffic; an initial deployment with no prior
-revision is scaled to zero or destroyed with the reviewed Terraform plan. Secret
-versions are disabled separately and local credential files are removed by the
-operator. On success, rollback is not run: the private revision keeps `100%` traffic,
-both Scheduler jobs stay enabled, subscriptions stay active, the watch expiration is
-future-dated, the dead-letter monitor remains observable, and a final internal
-authenticated health check passes.
+Rollback and teardown follow the ordered safety procedure in `docs/operations.md` and
+never make the service public. Rollback was not invoked for the accepted deployment:
+the private revision retained `100%` traffic, Scheduler jobs and subscriptions stayed
+active, and the Gmail watch remained future-dated.
 
 ## Regional infrastructure and IAM
 
@@ -889,9 +888,11 @@ module defines this exact inventory:
 
 The Cloud Run service uses `INGRESS_TRAFFIC_INTERNAL_ONLY`, IAM invocation, zero
 minimum instances, configurable maximum instances no greater than `2`, container
-concurrency `1`, one vCPU, 1 GiB memory, and a `115s` request timeout. Authenticated
-smoke originates from an authorized same-project/internal execution context because
-ingress is not opened for testing. Both primary subscriptions retain messages for
+concurrency `1`, one vCPU, 1 GiB memory, and a `115s` request timeout. Its HTTP
+startup probe calls `/health` on port `8080` after `10s`, every `3s`, with a `3s`
+timeout and failure threshold `5`. Authenticated smoke originates from an authorized
+same-project/internal execution context because ingress is not opened for testing.
+Both primary subscriptions retain messages for
 seven days, acknowledge within `120s`, retry from `10s` to `600s`, and forward after
 `5` delivery attempts to the shared dead-letter topic. The dead-letter monitor also
 retains messages for seven days.
@@ -921,8 +922,9 @@ terraform -chdir=infra test
 ```
 
 Tests use `mock_provider "google"` and require no GCP credentials or billable calls.
-CI never runs plan or apply. Project/billing selection, apply, secret versions, OAuth,
-and deployment require explicit operator approval in issue 13.
+CI never runs plan or apply. The accepted deployment used explicit operator approval;
+future project/billing selection, apply, secret-version, OAuth, or deployment changes
+require the same review.
 
 ## Security, privacy, and observability
 
@@ -1026,6 +1028,10 @@ Spec phase:
 
 - [Cloud Run ingress](https://cloud.google.com/run/docs/securing/ingress) for
   same-project Pub/Sub/Scheduler access to internal services;
+- [Cloud Run known issues](https://cloud.google.com/run/docs/known-issues#reserved-url-paths) for
+  reserved URL paths, including some paths ending in `z`;
+- [Cloud Run health checks](https://cloud.google.com/run/docs/configuring/healthchecks)
+  for the HTTP `/health` startup probe and readiness behavior;
 - [authenticated Pub/Sub push](https://cloud.google.com/pubsub/docs/authenticate-push-subscriptions)
   for OIDC identity, audience, and service-agent permissions;
 - [Gmail push notifications](https://developers.google.com/workspace/gmail/api/guides/push)
@@ -1049,14 +1055,14 @@ Spec phase:
 
 ## Delivery decisions
 
-Backlog issues 01 through 14 remain strictly consecutive. Each dependent issue starts
-only after the prior PR is merged and `main` is updated. Its Spec phase updates these
-documents, its expected Red demonstrates the missing behavior, its focused and
-complete suites finish Green, and its PR records exact sanitized evidence.
+The completed backlog was delivered consecutively. Each issue started only after its
+dependency merged, updated the specification before implementation, demonstrated an
+expected focused Red, and recorded Green and Refactor evidence without committing a
+failing check.
 
 Default tests use deterministic fakes and mocked providers. The final black-box layer
-runs against `uvicorn` over public HTTP routes and is the Playwright-equivalent test
-for this UI-free service. Backlog item 02 verifies liveness both through the ASGI test
-boundary and a running local/container process. Terraform apply, OAuth mutation,
-authenticated cloud smoke, and five live Gmail cases are explicit opt-in gates. The
-service is deployed and left running only in issue 13.
+runs against `uvicorn` over HTTP and is the Playwright-equivalent test for this UI-free
+service. Liveness is covered through the ASGI boundary and a running local/container
+process. Terraform apply, OAuth mutation, authenticated cloud smoke, and live Gmail
+acceptance remain explicit opt-in gates. Operations and teardown are authoritative in
+`docs/operations.md`; the accepted private service and Gmail watch remain running.

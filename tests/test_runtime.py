@@ -200,7 +200,7 @@ def test_runtime_13_production_app_injects_both_coordinators() -> None:
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as client:
-            health = await client.get("/healthz")
+            health = await client.get("/health")
             invalid = await client.post("/events/gmail", json={})
         return health.status_code, health.content, invalid.status_code
 

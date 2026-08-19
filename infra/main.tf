@@ -150,6 +150,18 @@ resource "google_cloud_run_v2_service" "app" {
     containers {
       image = var.container_image
 
+      startup_probe {
+        failure_threshold     = 5
+        initial_delay_seconds = 10
+        timeout_seconds       = 3
+        period_seconds        = 3
+
+        http_get {
+          path = "/health"
+          port = 8080
+        }
+      }
+
       resources {
         limits = {
           cpu    = "1"

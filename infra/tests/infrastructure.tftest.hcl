@@ -127,6 +127,22 @@ run "GCP_01_builds_the_regional_private_foundation" {
   }
 
   assert {
+    condition = try(alltrue([
+      length(google_cloud_run_v2_service.app.template[0].containers[0].startup_probe) == 1,
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].failure_threshold == 5,
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].initial_delay_seconds == 10,
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].timeout_seconds == 3,
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].period_seconds == 3,
+      length(google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].http_get) == 1,
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].http_get[0].path == "/health",
+      google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].http_get[0].port == 8080,
+      length(google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].tcp_socket) == 0,
+      length(google_cloud_run_v2_service.app.template[0].containers[0].startup_probe[0].grpc) == 0,
+    ]), false)
+    error_message = "Cloud Run must gate startup on the HTTP /health readiness contract."
+  }
+
+  assert {
     condition = alltrue([
       google_firestore_database.app.name == "(default)",
       google_firestore_database.app.type == "FIRESTORE_NATIVE",

@@ -155,6 +155,21 @@ def test_live_13_authenticated_smoke(live_config: LiveConfig) -> None:
             isinstance(image, str) and "@sha256:" in image,
             "cloud_run_image_not_immutable",
         )
+        startup_probe = mapping(
+            container.get("startupProbe"), "cloud_run_startup_probe_invalid"
+        )
+        startup_http_get = mapping(
+            startup_probe.get("httpGet"), "cloud_run_startup_probe_invalid"
+        )
+        require(
+            startup_probe.get("failureThreshold") == 5
+            and startup_probe.get("initialDelaySeconds") == 10
+            and startup_probe.get("timeoutSeconds") == 3
+            and startup_probe.get("periodSeconds") == 3
+            and startup_http_get.get("path") == "/health"
+            and startup_http_get.get("port") == 8080,
+            "cloud_run_startup_probe_invalid",
+        )
         environment = {
             item.get("name"): item
             for value in sequence(container.get("env"))
@@ -354,6 +369,6 @@ def test_live_13_authenticated_smoke(live_config: LiveConfig) -> None:
     elapsed_ms = int((monotonic() - started) * 1000)
     print(
         "AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true "
-        "scaling=true timeout=true quotas=true scheduler=true subscriptions=true "
-        f"budget=true public_invoker=false elapsed_ms={elapsed_ms}"
+        "scaling=true timeout=true health_probe=true quotas=true scheduler=true "
+        f"subscriptions=true budget=true public_invoker=false elapsed_ms={elapsed_ms}"
     )
