@@ -724,6 +724,7 @@ def test_mime_01_parsing_is_deterministic_frozen_silent_and_non_mutating(
         ("MP3 frame", "audio/mpeg", "mp3-frame", "audio", "audio/mpeg"),
         ("WAV", "audio/wav", "wav", "audio", "audio/wav"),
         ("WAV alias", "audio/x-wav", "wav", "audio", "audio/wav"),
+        ("Gmail WAV alias", "audio/vnd.wave", "wav", "audio", "audio/wav"),
         ("JPEG", "image/jpeg", "jpeg", "image", "image/jpeg"),
         ("PNG", "IMAGE/PNG", "png", "image", "image/png"),
     ],

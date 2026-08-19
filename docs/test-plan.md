@@ -169,8 +169,8 @@ The focused suite proves:
 - separate license-safe PDF, MP3 with ID3 and frame signatures, WAV, JPEG, and PNG
   cases map to canonical attachment values; referenced inline media counts,
   decorative inline media yields a bounded warning, and filenames are decoded and
-  sanitized; `audio/x-wav` canonicalizes to `audio/wav`, and a disposition-only file
-  counts;
+  sanitized; `audio/x-wav` and Gmail-observed `audio/vnd.wave` canonicalize to
+  `audio/wav`, and a disposition-only file counts;
 - each supported declared type rejects a different supported signature as
   `mime_attachment_type_mismatch`, and a file-bearing unsupported type rejects as
   `mime_unsupported_attachment_type` without returning bytes;
@@ -404,11 +404,12 @@ collection failure naming the absent `alza_ai.synchronization` contract. A crede
 emulator, network, Pub/Sub/Gmail service, missing third-party package, or unrelated
 syntax failure is not acceptable Red evidence. The failing state is not committed.
 
-Push parsing cases decode the owned synthetic Gmail notification and accept only the
-configured mailbox plus decimal history ID. Malformed base64/JSON, absent values, and
-wrong mailboxes return empty `204` without coordinator calls or reflecting address or
-payload data. Replaying one valid push after its cursor commits performs no additional
-history call or work publication. Two simultaneous pushes for one mailbox use a
+Push parsing cases decode padded and unpadded base64url Gmail notifications and accept
+only the configured mailbox plus a positive integer or decimal-string history ID,
+normalizing Gmail's integer form to a decimal string. Malformed base64/JSON, absent
+values, and wrong mailboxes return empty `204` without coordinator calls or reflecting
+address or payload data. Replaying one valid push after its cursor commits performs no
+additional history call or work publication. Two simultaneous pushes for one mailbox use a
 barrier-controlled Gmail fake and transactional store: exactly one owns the mailbox
 lease and publishes; the overlapping request acknowledges without entering Gmail.
 
@@ -418,7 +419,9 @@ JSON has exactly `schema_version`, `mailbox_key`, `message_id`, `history_id`, an
 deterministic `correlation_id`, with no owned raw marker. A publisher that accepts one
 item then fails forces empty `503`; the cursor and page checkpoint retain their prior
 values, and redelivery safely republishes before advancing the cursor. A fully
-published final page advances once to Gmail's returned final cursor.
+published final page advances once to Gmail's returned final cursor and runs bounded
+unread reconciliation before acknowledging, covering Gmail's observed
+notification/history visibility gap.
 
 A Gmail `404` stale-cursor case proves the pushed history ID is never committed. It
 runs bounded unread recovery first and replaces the stale cursor with a fresh watch
@@ -571,6 +574,80 @@ local container smoke uses the same lifecycle. At handoff, the local Uvicorn ser
 is left running for inspection. Playwright is not installed because this service has
 no browser UI; live HTTP is its equivalent end-to-end layer.
 
+## Issue 13 executable contract
+
+Issue 13 uses opt-in checks that are excluded from default pytest discovery and CI.
+Their only configuration is an ignored file below `credentials/`; it contains exact
+operator-selected resource identifiers and paths to local secret material, never
+secret values in command arguments. The checks reject unexpected identities,
+projects, billing links, regions, mailboxes, consent state, image tags, public IAM,
+or generated evidence paths before calling a mutating command.
+
+The preflight command authenticates without mutation and requires all of these facts
+to match the ignored configuration: active CLI and ADC account, active project and
+numeric project number, enabled link to the exact open billing account,
+`europe-west3`, dedicated Gmail profile, OAuth consent status, approved billing-
+currency monthly alert, and explicit trial-credit/minimal-cost approval. The
+operator-confirmed mailbox and live sender are compared in memory and printed only as
+`mailbox_match=true` and `sender_match=true`.
+
+Red adds the complete read-only authenticated smoke and Gmail acceptance verifier
+before infrastructure exists, then runs it with authenticated operator configuration.
+The accepted Red reaches GCP and reports that the exact `alza-ai` Cloud Run service
+and watch state are absent. A missing executable, GCP login, ADC login, operator
+selection, Gmail OAuth credential, or unrelated exception is not accepted as Red.
+The exact sanitized command, exit status, stable failure codes, and elapsed time are
+copied to the PR; the failing state and generated output are not committed.
+
+Green uses reviewed Terraform commands outside CI. It first targets APIs, the
+regional Artifact Registry repository, and empty secret containers; builds and pushes
+one image; resolves its registry digest; adds OAuth/API secret versions outside
+Terraform; and applies the complete module with the immutable digest, maximum
+instances `1`, `480 CZK` monthly alert, and the frozen quota ceilings. The focused
+post-deployment command then proves:
+
+- one private internal-only Cloud Run revision receives `100%` traffic and its image
+  contains `@sha256:`; no public invoker member exists;
+- the immutable image runs locally as its non-root user and receives exact
+  `200 {"status":"ok"}`; production ready/traffic state and authenticated internal
+  operational routes pass while no public invoker exists;
+- minimum/maximum instances are `0/1`, concurrency is `1`, timeout is `115s`, and
+  attachment/generation/search/output ceilings are `5/1/1/2048`;
+- `renew-watch` and `reconcile-unread` are enabled with their exact schedules,
+  routes, identities, and audience; primary subscriptions retain the expected push,
+  retry, acknowledgment, and dead-letter policy;
+- Gmail profile and single modify scope match, both application labels exist, the
+  watch expiration is in the future, and activation has a committed cursor.
+
+The live verifier observes, but never persists, five source/reply pairs:
+
+| Case ID | Stimulus | Required assertions |
+| --- | --- | --- |
+| `LIVE-01-plain` | Plain text | One reply, same thread, completed state, processed/read labels, `<120s`. |
+| `LIVE-01-pdf` | One valid PDF | Plain assertions plus exactly one supported attachment analyzed. |
+| `LIVE-01-audio` | MP3 and WAV together | Plain assertions plus exactly two supported attachments analyzed. |
+| `LIVE-01-image` | JPEG and PNG together | Plain assertions plus exactly two supported attachments analyzed. |
+| `LIVE-01-current` | Forced-current question | Plain assertions plus at least one valid public HTTP(S) citation and native grounding. |
+
+Output is one sanitized line per case containing only its fixed case ID, pass/fail,
+integer end-to-end latency milliseconds, reply/attachment/citation counts, final
+state, and boolean thread/header/label checks. It must not contain an address,
+subject, body, prompt, reply, citation URL/title, filename, media bytes, model output,
+Gmail ID, Firestore path, project/billing identifier, access/refresh token, OAuth
+client value, API key, exception text, or raw cloud response. Output remains terminal
+text only; `/evidence/`, `/test-results/`, Terraform plans/state, and credentials stay
+ignored and uncommitted.
+
+Refactor permits only removal of duplicated configuration or documentation ambiguity.
+It reruns the preflight, focused smoke, all five live cases, Ruff, mypy, the full
+Python suite at `85%` coverage, offline Terraform formatting/init/validation/tests,
+the built-container smoke, and `git diff --check`. A final focused pass rechecks
+private IAM, authenticated health, future watch expiration, enabled Scheduler jobs,
+healthy subscriptions, empty dead-letter backlog, and `100%` traffic to the accepted
+digest. The service and Gmail watch remain running. If any Green/live gate fails,
+rollback pauses Scheduler, stops the watch, disables push delivery, restores the
+previous digest when present, and never changes ingress or grants a public invoker.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -589,6 +666,58 @@ the built-container smoke check, and offline Terraform checks. It uses
 only deterministic fakes and mocked providers.
 Normal tests mock Gmail, cloud, Gemini, OpenRouter, and search. Authenticated smoke and
 live Gmail tests are explicit operator-approved gates outside default CI.
+
+### Issue 13 observed sanitized acceptance
+
+The 2026-08-19 Red runs reached the intended authenticated boundaries before any
+deployment mutation. The GCP smoke exited `1` with
+`cloud_run_service_absent` (`elapsed_ms=1406`), and the Gmail acceptance exited `1`
+with `gmail_watch_absent` (`elapsed_ms=6390`). The failing states and terminal output
+were not committed. Focused Red reproductions discovered during live acceptance also
+failed before their fixes for empty-history visibility reconciliation, unpadded
+base64url notification data, Gmail's integer `historyId`, and Gmail's
+`audio/vnd.wave` WAV declaration; each focused test passed after its minimal fix.
+
+Final focused and complete results are:
+
+```text
+Ruff format: 38 files already formatted
+Ruff check: All checks passed
+mypy: Success: no issues found in 32 source files
+Synchronization: 14 passed in 0.76s
+MIME: 73 passed in 0.16s
+Python complete: 266 passed, 3 skipped, 102 subtests passed in 4.01s
+Coverage: 88.72% (required 85%)
+Terraform: valid; 7 passed, 0 failed
+Container: pass=true nonroot=true status=200 body_exact=true elapsed_ms=4048
+```
+
+The accepted deployment is private revision `alza-ai-00005-cfq`, serving `100%`
+traffic from immutable digest
+`sha256:cf2013a13a82847e48812282a4217bd624e8e3ff6f45c313ad8ed2ced938957f`.
+Its final authenticated and operational results are:
+
+```text
+PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=7314
+AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true scaling=true timeout=true quotas=true scheduler=true subscriptions=true budget=true public_invoker=false elapsed_ms=7678
+PRODUCTION-GMAIL-PROBE pass=true profile_match=true labels_restored=true latency_ms=1094
+TERRAFORM-DRIFT pass=true create=0 update=0 replace=0 destroy=0
+DEAD-LETTER pass=true backlog=0
+```
+
+The final five-case verifier emitted only the approved sanitized fields:
+
+```text
+LIVE-01-plain pass=true latency_ms=69000 reply_count=1 attachment_count=0 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-pdf pass=true latency_ms=90000 reply_count=1 attachment_count=1 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-audio pass=true latency_ms=69000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-image pass=true latency_ms=51000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-current pass=true latency_ms=62000 reply_count=1 attachment_count=0 citation_count=1 state=completed thread=true headers=true labels=true
+```
+
+Rollback was not invoked. The accepted private revision retains `100%` traffic, both
+Scheduler jobs and push subscriptions remain active, the Gmail watch is future-dated,
+and the service remains running.
 
 ## Planned Red evidence
 

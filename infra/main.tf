@@ -3,8 +3,10 @@ locals {
     "aiplatform.googleapis.com",
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
     "cloudscheduler.googleapis.com",
     "firestore.googleapis.com",
+    "gmail.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "logging.googleapis.com",
@@ -34,6 +36,19 @@ locals {
     MAX_REPLY_GENERATION_CALLS    = var.max_reply_generation_calls
     MAX_REPLY_OUTPUT_TOKENS       = var.max_reply_output_tokens
     MAX_SEARCH_CALLS              = var.max_search_calls
+  }
+
+  runtime_environment = merge(local.quota_environment, {
+    ALZA_ENV             = "production"
+    GEMINI_MODEL         = "gemini-3.6-flash"
+    GOOGLE_CLOUD_PROJECT = var.project_id
+    RESPONSE_PROVIDER    = "gemini"
+    SCRATCH_BUCKET       = var.scratch_bucket_name
+  })
+
+  runtime_secret_environment = {
+    GMAIL_OAUTH_CLIENT_JSON  = "gmail-oauth-client"
+    GMAIL_REFRESH_TOKEN_JSON = "gmail-refresh-token"
   }
 }
 
@@ -144,14 +159,30 @@ resource "google_cloud_run_v2_service" "app" {
       }
 
       dynamic "env" {
-        for_each = local.quota_environment
+        for_each = local.runtime_environment
         content {
           name  = env.key
           value = tostring(env.value)
         }
       }
+
+      dynamic "env" {
+        for_each = local.runtime_secret_environment
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.runtime[env.value].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [
+    google_project_service.required,
+    google_secret_manager_secret_iam_member.runtime,
+  ]
 }

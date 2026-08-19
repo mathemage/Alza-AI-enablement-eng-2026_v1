@@ -1,3 +1,5 @@
+import os
+from collections.abc import Mapping
 from typing import Protocol, cast
 
 from fastapi import FastAPI, Request, Response
@@ -80,4 +82,16 @@ def create_app(
     return application
 
 
-app = create_app()
+def select_app(environ: Mapping[str, str] | None = None) -> FastAPI:
+    settings = os.environ if environ is None else environ
+    mode = settings.get("ALZA_ENV", "local")
+    if mode == "local":
+        return create_app()
+    if mode == "production":
+        from alza_ai.runtime import create_production_app
+
+        return create_production_app(settings)
+    raise RuntimeError("app_mode_invalid")
+
+
+app = select_app()
