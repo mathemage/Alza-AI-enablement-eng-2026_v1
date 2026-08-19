@@ -294,6 +294,31 @@ def test_sync_01_duplicate_push_envelopes_publish_and_advance_once() -> None:
     )
 
 
+def test_sync_02_empty_history_visibility_gap_reconciles_unread_before_ack() -> None:
+    store, client, _ = make_store()
+    activate(store)
+    gmail = FakeGmail()
+    gmail.history_pages[None] = HistoryPage((), "101", None)
+    gmail.unread_pages[None] = MessagePage(
+        (GmailMessageRef("delayed", "thread-delayed"),), None
+    )
+    gmail.metadata["delayed"] = GmailMessageMetadata(
+        "delayed",
+        "thread-delayed",
+        int(ACTIVATED_AT.timestamp() * 1000),
+        ("INBOX", "UNREAD"),
+    )
+    publisher = FakePublisher()
+    synchronizer = make_synchronizer(store=store, gmail=gmail, publisher=publisher)
+
+    assert synchronizer.handle_push(GmailPush(MAILBOX_ADDRESS, "101")) is SyncResult.ACK
+
+    assert gmail.history_calls == [("100", None)]
+    assert gmail.unread_calls == [None]
+    assert [work.message_id for work in publisher.published] == ["delayed"]
+    assert mailbox_document(client)["history_cursor"] == "101"
+
+
 def test_sync_02_partial_publication_preserves_cursor_for_safe_replay() -> None:
     store, client, _ = make_store()
     activate(store)
@@ -594,4 +619,26 @@ def test_sync_01_push_parser_rejects_non_decimal_history_without_reflection() ->
     )
     assert (
         parse_gmail_push_envelope({"message": {"data": "Private raw marker"}}) is None
+    )
+
+
+def test_sync_01_push_parser_accepts_unpadded_base64url_from_gmail() -> None:
+    notification = json.dumps(
+        {"emailAddress": MAILBOX_ADDRESS, "historyId": "101"}
+    ).encode()
+    encoded = base64.urlsafe_b64encode(notification).decode().rstrip("=")
+
+    assert parse_gmail_push_envelope({"message": {"data": encoded}}) == GmailPush(
+        MAILBOX_ADDRESS, "101"
+    )
+
+
+def test_sync_01_push_parser_normalizes_numeric_gmail_history_id() -> None:
+    notification = json.dumps(
+        {"emailAddress": MAILBOX_ADDRESS, "historyId": 101}
+    ).encode()
+    encoded = base64.urlsafe_b64encode(notification).decode().rstrip("=")
+
+    assert parse_gmail_push_envelope({"message": {"data": encoded}}) == GmailPush(
+        MAILBOX_ADDRESS, "101"
     )

@@ -88,6 +88,7 @@ _MEDIA_TYPES = {
     "audio/mpeg": _MediaSpec("audio", "audio/mpeg", "mp3"),
     "audio/wav": _MediaSpec("audio", "audio/wav", "wav"),
     "audio/x-wav": _MediaSpec("audio", "audio/wav", "wav"),
+    "audio/vnd.wave": _MediaSpec("audio", "audio/wav", "wav"),
     "image/jpeg": _MediaSpec("image", "image/jpeg", "jpeg"),
     "image/png": _MediaSpec("image", "image/png", "png"),
 }

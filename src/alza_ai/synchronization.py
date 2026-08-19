@@ -618,7 +618,7 @@ class MailboxSynchronizer:
                         cursor,
                         page.history_id,
                     )
-                    return SyncResult.ACK
+                    return self.reconcile_unread()
                 self._store.save_history_checkpoint(
                     self._mailbox_key,
                     lease.owner,
@@ -776,14 +776,24 @@ def parse_gmail_push_envelope(value: object) -> GmailPush | None:
     if not isinstance(encoded, str):
         return None
     try:
-        decoded = base64.b64decode(encoded, validate=True)
+        padded = encoded + "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
         notification = json.loads(decoded)
     except binascii.Error, UnicodeDecodeError, json.JSONDecodeError:
         return None
     if not isinstance(notification, Mapping):
         return None
     mailbox_address = notification.get("emailAddress")
-    history_id = notification.get("historyId")
+    raw_history_id = notification.get("historyId")
+    history_id: object
+    if (
+        isinstance(raw_history_id, int)
+        and not isinstance(raw_history_id, bool)
+        and raw_history_id > 0
+    ):
+        history_id = str(raw_history_id)
+    else:
+        history_id = raw_history_id
     if (
         not isinstance(mailbox_address, str)
         or not mailbox_address

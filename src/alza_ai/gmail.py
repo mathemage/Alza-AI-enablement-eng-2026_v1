@@ -149,7 +149,15 @@ class _ThreadsResource(Protocol):
     def get(self, **kwargs: object) -> _Request: ...
 
 
+class _LabelsResource(Protocol):
+    def list(self, **kwargs: object) -> _Request: ...
+
+    def create(self, **kwargs: object) -> _Request: ...
+
+
 class _UsersResource(Protocol):
+    def getProfile(self, **kwargs: object) -> _Request: ...
+
     def watch(self, **kwargs: object) -> _Request: ...
 
     def stop(self, **kwargs: object) -> _Request: ...
@@ -160,6 +168,8 @@ class _UsersResource(Protocol):
 
     def threads(self) -> _ThreadsResource: ...
 
+    def labels(self) -> _LabelsResource: ...
+
 
 class _GmailService(Protocol):
     def users(self) -> _UsersResource: ...
@@ -168,6 +178,7 @@ class _GmailService(Protocol):
 class GmailApiGateway:
     def __init__(self, service: object) -> None:
         self._service = cast(_GmailService, service)
+        self._label_ids: dict[str, str] = {}
 
     @classmethod
     def from_credentials(cls, credentials: object) -> GmailApiGateway:
@@ -197,6 +208,34 @@ class GmailApiGateway:
             )
         except TypeError, ValueError:
             raise GmailTerminalError("gmail_invalid_response") from None
+
+    def get_profile(self) -> str:
+        response = self._execute(self._service.users().getProfile(userId="me"))
+        return self._required_string(response, "emailAddress")
+
+    def ensure_labels(self, labels: tuple[str, ...]) -> None:
+        response = self._execute(self._service.users().labels().list(userId="me"))
+        known = {
+            self._required_string(item, "name"): self._required_string(item, "id")
+            for item in self._mapping_tuple(response, "labels")
+        }
+        for label in labels:
+            if label in known:
+                continue
+            created = self._execute(
+                self._service.users()
+                .labels()
+                .create(
+                    userId="me",
+                    body={
+                        "name": label,
+                        "labelListVisibility": "labelShow",
+                        "messageListVisibility": "show",
+                    },
+                )
+            )
+            known[label] = self._required_string(created, "id")
+        self._label_ids = {label: known[label] for label in labels}
 
     def stop_watch(self) -> None:
         self._execute(self._service.users().stop(userId="me"))
@@ -299,8 +338,10 @@ class GmailApiGateway:
                 userId="me",
                 id=message_id,
                 body={
-                    "addLabelIds": list(add),
-                    "removeLabelIds": list(remove),
+                    "addLabelIds": [self._label_ids.get(label, label) for label in add],
+                    "removeLabelIds": [
+                        self._label_ids.get(label, label) for label in remove
+                    ],
                 },
             )
         )

@@ -364,14 +364,39 @@ run "GCP_03_bounds_cost_and_keeps_ci_safe" {
   assert {
     condition = {
       for setting in google_cloud_run_v2_service.app.template[0].containers[0].env :
-      setting.name => setting.value
+      setting.name => setting.value if length(setting.value_source) == 0
       } == {
       MAX_ATTACHMENT_ANALYSIS_CALLS = tostring(var.max_attachment_analysis_calls)
       MAX_REPLY_GENERATION_CALLS    = tostring(var.max_reply_generation_calls)
       MAX_REPLY_OUTPUT_TOKENS       = tostring(var.max_reply_output_tokens)
       MAX_SEARCH_CALLS              = tostring(var.max_search_calls)
+      ALZA_ENV                      = "production"
+      GEMINI_MODEL                  = "gemini-3.6-flash"
+      GOOGLE_CLOUD_PROJECT          = var.project_id
+      RESPONSE_PROVIDER             = "gemini"
+      SCRATCH_BUCKET                = var.scratch_bucket_name
     }
-    error_message = "Cloud Run must receive only the four bounded, non-secret quota settings."
+    error_message = "Cloud Run must receive only the bounded production configuration."
+  }
+
+  assert {
+    condition = {
+      for setting in google_cloud_run_v2_service.app.template[0].containers[0].env :
+      setting.name => {
+        secret  = one(setting.value_source).secret_key_ref[0].secret
+        version = one(setting.value_source).secret_key_ref[0].version
+      } if length(setting.value_source) == 1
+      } == {
+      GMAIL_OAUTH_CLIENT_JSON = {
+        secret  = google_secret_manager_secret.runtime["gmail-oauth-client"].secret_id
+        version = "latest"
+      }
+      GMAIL_REFRESH_TOKEN_JSON = {
+        secret  = google_secret_manager_secret.runtime["gmail-refresh-token"].secret_id
+        version = "latest"
+      }
+    }
+    error_message = "Cloud Run must read only the two required Gmail secrets at runtime."
   }
 
   assert {
@@ -393,8 +418,10 @@ run "GCP_03_bounds_cost_and_keeps_ci_safe" {
       "aiplatform.googleapis.com",
       "artifactregistry.googleapis.com",
       "billingbudgets.googleapis.com",
+      "cloudresourcemanager.googleapis.com",
       "cloudscheduler.googleapis.com",
       "firestore.googleapis.com",
+      "gmail.googleapis.com",
       "iam.googleapis.com",
       "iamcredentials.googleapis.com",
       "logging.googleapis.com",

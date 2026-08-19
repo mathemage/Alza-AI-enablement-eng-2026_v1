@@ -357,13 +357,14 @@ The allowed media families are:
 | --- | --- | --- |
 | PDF | `application/pdf` | PDF signature |
 | MP3 | `audio/mpeg` | MPEG audio/ID3 signature |
-| WAV | `audio/wav`, `audio/x-wav` | RIFF/WAVE signature |
+| WAV | `audio/wav`, `audio/x-wav`, `audio/vnd.wave` | RIFF/WAVE signature |
 | JPEG | `image/jpeg` | JPEG signature |
 | PNG | `image/png` | PNG signature |
 
-`audio/x-wav` is normalized to `audio/wav`; every other output type is the declared
-type above. Declared MIME tokens are compared case-insensitively and normalized to
-lowercase. Families normalize to `document`, `audio`, or `image`. Signature predicates
+The WAV aliases `audio/x-wav` and Gmail-observed `audio/vnd.wave` are normalized to
+`audio/wav`; every other output type is the declared type above. Declared MIME tokens
+are compared case-insensitively and normalized to lowercase. Families normalize to
+`document`, `audio`, or `image`. Signature predicates
 are exact: PDF starts with `%PDF-`; MP3 starts with `ID3` or has an MPEG frame sync
 whose first byte is `0xff` and whose second byte has its upper three bits set; WAV
 starts with `RIFF` and has `WAVE` at bytes 8 through 11; JPEG starts with
@@ -587,8 +588,10 @@ responses and logs contain no exception or message content.
 
 ## Synchronization, retry, and terminal-failure semantics
 
-`POST /events/gmail` accepts only a Pub/Sub push envelope whose base64-decoded JSON is
-an object with non-empty string `emailAddress` and decimal-string `historyId` values.
+`POST /events/gmail` accepts only a Pub/Sub push envelope whose padded or unpadded
+base64url-decoded JSON is an object with a non-empty string `emailAddress` and a
+positive integer or decimal-string `historyId`; the integer form emitted by Gmail is
+normalized immediately to the internal decimal-string domain.
 The address must case-insensitively equal the one configured mailbox, but neither the
 address nor malformed payload data is logged, persisted, reflected, or copied to work.
 Malformed, wrong-mailbox, and already-committed duplicate notifications receive an
@@ -615,7 +618,10 @@ entire history page publishes may the transaction save its sanitized page-token 
 integer item-offset checkpoint. A partial page failure retains the previous checkpoint
 and committed cursor, so replay may duplicate accepted items but cannot lose an item.
 Only the final fully published page transactionally advances `history_cursor` to
-Gmail's final history position, clears the checkpoint, and releases the lease.
+Gmail's final history position, clears the checkpoint, and releases the lease. Before
+acknowledging that push, synchronization immediately runs bounded unread
+reconciliation; this closes Gmail's observed notification/history visibility gap
+without moving the committed cursor or bypassing final-record idempotency.
 
 `POST /jobs/renew-watch` calls the existing exact-topic `INBOX` watch operation. The
 first successful activation transaction sets immutable UTC `activated_at`, initializes
@@ -756,6 +762,101 @@ user, publishes loopback port `8080`, waits up to 30 seconds for exact health st
 `200` and body `{"status":"ok"}`, reports logs on failure, and stops the container in
 all cases. Local and CI commands are identical.
 
+## Live deployment and acceptance
+
+Issue 13 is an explicit operator-approved, local-only deployment. Before the first
+GCP write, one authenticated preflight must compare the active Google identity and
+ADC identity with the operator-selected account; resolve the selected project ID to
+its exact project number and active lifecycle; prove that the selected open billing
+account is linked to that project; and require exact confirmation of
+`europe-west3`, the dedicated Gmail mailbox, OAuth consent status, and the
+trial-credit/minimal-cost exposure. The approved monthly alert is denominated in the
+billing account currency and is not a hard spending cap. The check rejects ambient,
+missing, or mismatched values and never chooses a project, account, region, or
+mailbox by name inference.
+
+Exact deployment inputs live only in an ignored operator configuration under
+`credentials/`; Terraform variable files, plans, state, OAuth client JSON, refresh
+tokens, API keys, generated media, and acceptance output are also ignored. Commands
+receive the project and region explicitly. No credential, mailbox address, billing
+identifier, raw message content, generated reply, attachment data, prompt, token, or
+secret is written to Git, Terraform state, container layers, Cloud Logging, or
+acceptance evidence.
+
+Terraform is applied interactively outside CI. A bootstrap target creates only the
+required APIs, Artifact Registry repository, and empty regional secret containers so
+the image and secret versions can be supplied without entering Terraform state. The
+production image is built once, pushed to the regional repository, resolved to its
+registry `sha256` digest, and the complete apply references only that immutable
+digest. Secret versions are added with `gcloud` from ignored local files or standard
+input. The complete apply uses maximum instances `1` for the smallest live revision,
+keeps minimum instances `0`, and preserves internal-only ingress and service-account
+invocation; any `allUsers` or `allAuthenticatedUsers` binding is a hard failure.
+
+The production entry point composes only existing adapters: Gmail with the verified
+refresh token and OAuth client, Firestore processing and synchronization stores,
+the metadata-only Pub/Sub work publisher, regional scratch storage, Gemini attachment
+analysis, and the selected reply provider. Non-secret settings identify the explicit
+project, `europe-west3`, `global` Gemini location, scratch bucket, topic resource,
+opaque mailbox key, dedicated mailbox, and normalized sender allowlist. Cloud Run
+reads secret versions through Secret Manager references. Startup validates all
+required selected-provider configuration without printing values; there is no
+test-only route or fallback adapter in the deployed revision.
+
+The authenticated smoke is read-only after deployment. It verifies that the image is
+digest-pinned, exactly one revision receives traffic, ingress is internal-only,
+minimum instances are `0`, maximum instances are `1`, concurrency is `1`, timeout is
+`115s`, the four application ceilings match the approved values, and IAM contains no
+public principal. The accepted immutable image runs locally as its non-root user and
+returns exact `200 {"status":"ok"}`. In production, ready/traffic status and successful
+authenticated internal calls to `renew-watch`, `reconcile-unread`, Gmail push, and
+work processing prove the serving path without opening ingress; anonymous invocation
+remains unauthorized. Both Scheduler jobs must be enabled with their frozen schedules
+and OIDC audience, both push subscriptions must be healthy with their frozen
+retry/dead-letter controls, and the dead-letter monitor must remain available.
+
+Gmail OAuth requests offline consent and only
+`https://www.googleapis.com/auth/gmail.modify`. The bootstrap must verify the Gmail
+profile equals the explicitly confirmed dedicated mailbox before its refresh token
+is stored. Consent in Testing mode is accepted only with an explicit seven-day token
+risk confirmation; otherwise the operator confirms Production status. The runtime
+ensures the two application label IDs correspond to `AI/Processed` and `AI/Error`.
+Only after the private health smoke passes does the operator invoke the authenticated
+renew-watch route. Acceptance requires a future Gmail watch expiration recorded with
+an immutable activation time and an exact `gmail-notifications` topic.
+
+The five live cases are sent from one explicitly approved non-bot address and carry
+unique opaque case IDs used only in memory:
+
+| Case | Input and required reply property |
+| --- | --- |
+| `plain` | One plain-text question; one non-empty reply. |
+| `pdf` | One valid `application/pdf`; the reply reflects attachment analysis. |
+| `audio` | One message containing valid `audio/mpeg` and WAV (`audio/wav`, including Gmail's normalized `audio/vnd.wave` form); both attachments are analyzed. |
+| `image` | One message containing valid `image/jpeg` and `image/png`; both attachments are analyzed. |
+| `current` | One forced-current question; the reply contains at least one normalized public HTTP(S) citation grounded by native Google Search. |
+
+For each case, acceptance starts at the source message's Gmail `internalDate` and
+ends at the single application reply's `internalDate`. Within `120s`, exactly one
+reply must exist in the original Gmail thread with the deterministic outbound and
+source headers, the processing record must be `completed`, `AI/Processed` must be
+present, and `UNREAD` must be absent. `AI/Error`, a second reply, another thread,
+missing attachment coverage, invalid citation, terminal/retry state, or latency above
+`120s` fails the case. The verifier emits only case ID, pass/fail, integer latency,
+reply count, attachment count, citation count, final state, and boolean label/thread
+checks; generated evidence files are forbidden.
+
+Rollback never makes the service public. Before watch activation, a failed revision
+is removed from traffic and the prior healthy digest is restored when one exists.
+After activation, rollback first pauses both Scheduler jobs, stops the Gmail watch,
+and disables push delivery before moving traffic; an initial deployment with no prior
+revision is scaled to zero or destroyed with the reviewed Terraform plan. Secret
+versions are disabled separately and local credential files are removed by the
+operator. On success, rollback is not run: the private revision keeps `100%` traffic,
+both Scheduler jobs stay enabled, subscriptions stay active, the watch expiration is
+future-dated, the dead-letter monitor remains observable, and a final internal
+authenticated health check passes.
+
 ## Regional infrastructure and IAM
 
 The single root module is `infra/`. It requires Terraform `1.15.8`, pins the Google
@@ -769,9 +870,9 @@ regional exception. Pub/Sub topics are global resources whose message-storage po
 allows persistence only in `europe-west3`.
 
 Terraform enables only `run`, `artifactregistry`, `firestore`, `storage`,
-`secretmanager`, `pubsub`, `cloudscheduler`, `billingbudgets`, `aiplatform`,
-`iam`, `iamcredentials`, `logging`, and `monitoring` APIs. The module defines this
-exact inventory:
+`secretmanager`, `pubsub`, `cloudscheduler`, `billingbudgets`, `aiplatform`, `gmail`,
+`cloudresourcemanager`, `iam`, `iamcredentials`, `logging`, and `monitoring` APIs. The
+module defines this exact inventory:
 
 - one `alza-ai` Cloud Run service using an operator-supplied immutable image;
 - one `alza-ai` Docker repository, one `(default)` Native Firestore database, and one

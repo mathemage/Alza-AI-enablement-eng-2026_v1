@@ -185,13 +185,21 @@ class MockThreadsResource:
         self.get = MockMethod()
 
 
+class MockLabelsResource:
+    def __init__(self) -> None:
+        self.list = MockMethod()
+        self.create = MockMethod()
+
+
 class MockUsersResource:
     def __init__(self) -> None:
+        self.getProfile = MockMethod()
         self.watch = MockMethod()
         self.stop = MockMethod()
         self.history_resource = MockHistoryResource()
         self.messages_resource = MockMessagesResource()
         self.threads_resource = MockThreadsResource()
+        self.labels_resource = MockLabelsResource()
 
     def history(self) -> MockHistoryResource:
         return self.history_resource
@@ -201,6 +209,9 @@ class MockUsersResource:
 
     def threads(self) -> MockThreadsResource:
         return self.threads_resource
+
+    def labels(self) -> MockLabelsResource:
+        return self.labels_resource
 
 
 class MockGmailService:
@@ -398,6 +409,47 @@ def test_gmail_01_adapter_factory_uses_the_mocked_gmail_v1_client(
             ("gmail", "v1"),
             {"credentials": credentials, "cache_discovery": False},
         )
+    ]
+
+
+def test_gmail_01_runtime_profile_and_labels_are_verified_and_resolved() -> None:
+    service = MockGmailService()
+    users = service.users_resource
+    users.getProfile.queue({"emailAddress": "dedicated@example.test"})
+    users.labels_resource.list.queue(
+        {"labels": [{"id": "Label_processed", "name": "AI/Processed"}]}
+    )
+    users.labels_resource.create.queue({"id": "Label_error", "name": "AI/Error"})
+    users.messages_resource.modify.queue({})
+    gateway = GmailApiGateway(service)
+
+    assert gateway.get_profile() == "dedicated@example.test"
+    gateway.ensure_labels(("AI/Processed", "AI/Error"))
+    gateway.modify_labels(
+        "message-1", add=("AI/Processed",), remove=("UNREAD", "AI/Error")
+    )
+
+    assert users.getProfile.calls == [{"userId": "me"}]
+    assert users.labels_resource.list.calls == [{"userId": "me"}]
+    assert users.labels_resource.create.calls == [
+        {
+            "userId": "me",
+            "body": {
+                "name": "AI/Error",
+                "labelListVisibility": "labelShow",
+                "messageListVisibility": "show",
+            },
+        }
+    ]
+    assert users.messages_resource.modify.calls == [
+        {
+            "userId": "me",
+            "id": "message-1",
+            "body": {
+                "addLabelIds": ["Label_processed"],
+                "removeLabelIds": ["UNREAD", "Label_error"],
+            },
+        }
     ]
 
 

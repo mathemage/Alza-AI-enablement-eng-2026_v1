@@ -21,9 +21,12 @@ resource "google_billing_budget" "app" {
     }
   }
 
-  all_updates_rule {
-    monitoring_notification_channels = var.budget_notification_channel_ids
-    disable_default_iam_recipients   = length(var.budget_notification_channel_ids) > 0
+  dynamic "all_updates_rule" {
+    for_each = length(var.budget_notification_channel_ids) > 0 ? [true] : []
+    content {
+      monitoring_notification_channels = var.budget_notification_channel_ids
+      disable_default_iam_recipients   = true
+    }
   }
 
   depends_on = [google_project_service.required]
