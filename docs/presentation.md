@@ -57,9 +57,9 @@ The MVP serves one dedicated mailbox and only the current message. It supports P
 MP3, WAV, JPEG, and PNG within documented limits. It has no full-thread context, RAG,
 scraper, separate search service, browser UI, or application-level provider fallback.
 Gemini uses a global endpoint, so model processing has no EU-only guarantee. The
-image's exact `GET /healthz` contract is tested locally; Cloud Run reserves that path
-on its default URL, so production readiness uses Ready/traffic state and authenticated
-operational-route evidence instead of claiming a live health-body response.
+image and Cloud Run HTTP startup probe share the exact `GET /health` contract;
+production acceptance requires that response from an authenticated same-project
+internal request.
 
 ## Costs
 
@@ -70,7 +70,7 @@ when selected can consume trial credit or incur charges.
 
 ## Operations and teardown
 
-Routine readiness, the health-route boundary, OAuth/watch renewal, recovery, provider
+Routine readiness, authenticated health, OAuth/watch renewal, recovery, provider
 switching, quotas, rollback, and ordered teardown are defined in
 [operations](operations.md). A successful demo does not tear down or stop the healthy
 service or Gmail watch. The timed delivery sequence and fallback rules are in the

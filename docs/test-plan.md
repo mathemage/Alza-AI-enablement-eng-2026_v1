@@ -26,7 +26,7 @@ identify the unmet behavior rather than an unrelated setup failure.
 
 ## Issue 02 executable contract
 
-The focused test sends `GET /healthz` through FastAPI's ASGI boundary and requires all
+The focused test sends `GET /health` through FastAPI's ASGI boundary and requires all
 of the following:
 
 - status `200`;
@@ -54,7 +54,7 @@ The local black-box check starts the service with:
 uv run uvicorn alza_ai.main:app --host 0.0.0.0 --port 8080
 ```
 
-and sends `curl --fail --silent --show-error http://127.0.0.1:8080/healthz`. The
+and sends `curl --fail --silent --show-error http://127.0.0.1:8080/health`. The
 container gate builds the repository Dockerfile, asserts that its configured user is
 not root, starts it on port `8080`, and applies the same HTTP assertion. Playwright is
 not installed because this backlog item has no browser UI; live HTTP is the equivalent
@@ -187,7 +187,7 @@ The focused suite proves:
 After Refactor, run the focused command above, the complete existing suite with
 `uv run pytest -q`, `uv run ruff format --check .`, `uv run ruff check .`, and
 `uv run mypy src tests`. Because issue 05 exposes no HTTP route, its live integration
-smoke starts the existing `uvicorn` entry point and verifies `GET /healthz`; parser
+smoke starts the existing `uvicorn` entry point and verifies `GET /health`; parser
 behavior remains exhaustively unit-tested at its pure mapping boundary. Any network,
 filesystem, remote HTML, Gmail, cloud, or paid-provider access from the parser is a
 defect; the parser must emit no log record.
@@ -233,7 +233,7 @@ unchanged and are rerun as an offline integration gate.
 After Refactor, run the focused command, the complete suite with `uv run pytest -q`,
 `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src tests`.
 Because issue 06 exposes no new HTTP route, its live integration smoke starts the
-existing `uvicorn` entry point and verifies `GET /healthz`; the fake adapters are the
+existing `uvicorn` entry point and verifies `GET /health`; the fake adapters are the
 executable attachment boundary.
 
 ## Issue 07 executable contract
@@ -283,7 +283,7 @@ makes a live, cloud, search, or paid-provider request.
 After Refactor, run the focused command, the complete suite with `uv run pytest -q`,
 `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src tests`.
 Because issue 07 adds no HTTP route, its black-box integration smoke starts the
-existing `uvicorn` entry point and verifies `GET /healthz`; the shared fake/client
+existing `uvicorn` entry point and verifies `GET /health`; the shared fake/client
 suite is the executable reply-provider boundary.
 
 ## Issue 08 executable contract
@@ -334,7 +334,7 @@ After Refactor, run `uv run pytest tests/test_live_search.py -q`, then the compl
 mocked-provider suite with `uv run pytest -q`, `uv run ruff format --check .`,
 `uv run ruff check .`, and `uv run mypy src tests`. No default test opens a network
 connection or makes a cloud, live-search, or paid-provider call. Because issue 08 adds
-no HTTP route, start the existing `uvicorn` entry point and verify `GET /healthz` as
+no HTTP route, start the existing `uvicorn` entry point and verify `GET /health` as
 the applicable running-server smoke.
 
 ## Issue 09 executable contract
@@ -391,7 +391,7 @@ After Refactor, run `uv run pytest tests/test_processing.py -q`, then `uv run py
 -q`, `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy src
 tests`. Start the current branch with `uvicorn`, send one black-box metadata-only
 processing request configured with deterministic local adapters, and verify the
-documented empty status/body plus `GET /healthz`. This running HTTP check is the
+documented empty status/body plus `GET /health`. This running HTTP check is the
 Playwright-equivalent integration layer because the product has no browser UI.
 
 ## Issue 10 executable contract
@@ -442,7 +442,7 @@ failures to empty `503` for `/events/gmail`, `/jobs/renew-watch`, and
 
 After Refactor, run `uv run pytest tests/test_synchronization.py -q`, then `uv run
 pytest -q`, `uv run ruff format --check .`, `uv run ruff check .`, and `uv run mypy
-src tests`. Start current-branch `uvicorn`, verify `GET /healthz`, malformed push
+src tests`. Start current-branch `uvicorn`, verify `GET /health`, malformed push
 acknowledgment, and the empty retry responses produced when deployment adapters are
 intentionally absent. This live HTTP/ASGI exercise is the Playwright-equivalent
 integration layer because this item adds no browser UI.
@@ -569,7 +569,7 @@ git diff --check
 
 CI runs the same offline gates. It separately builds `alza-ai:test`, verifies a
 non-root configured user, starts the container on loopback port `8080`, requires exact
-`200 {"status":"ok"}` from `GET /healthz`, and stops it through an exit trap. The
+`200 {"status":"ok"}` from `GET /health`, and stops it through an exit trap. The
 local container smoke uses the same lifecycle. At handoff, the local Uvicorn service
 is left running for inspection. Playwright is not installed because this service has
 no browser UI; live HTTP is its equivalent end-to-end layer.
@@ -611,8 +611,9 @@ post-deployment command then proves:
 - one private internal-only Cloud Run revision receives `100%` traffic and its image
   contains `@sha256:`; no public invoker member exists;
 - the immutable image runs locally as its non-root user and receives exact
-  `200 {"status":"ok"}`; production ready/traffic state and authenticated internal
-  operational routes pass while no public invoker exists;
+  `200 {"status":"ok"}` from `/health`; the deployed HTTP startup probe has the
+  frozen path/port/timing settings, and an authenticated same-project internal GET
+  returns the exact response while no public invoker exists;
 - minimum/maximum instances are `0/1`, concurrency is `1`, timeout is `115s`, and
   attachment/generation/search/output ceilings are `5/1/1/2048`;
 - `renew-watch` and `reconcile-unread` are enabled with their exact schedules,
@@ -644,8 +645,8 @@ Refactor permits only removal of duplicated configuration or documentation ambig
 It reruns the preflight, focused smoke, all five live cases, Ruff, mypy, the full
 Python suite at `85%` coverage, offline Terraform formatting/init/validation/tests,
 the built-container smoke, and `git diff --check`. A final focused pass rechecks
-private IAM, Ready/traffic state, the accepted-image health contract, authenticated
-operational-route reachability, future watch expiration, enabled Scheduler jobs,
+private IAM, Ready/traffic state, the `/health` startup and authenticated response,
+future watch expiration, enabled Scheduler jobs,
 healthy subscriptions, empty dead-letter backlog, and `100%` traffic to the accepted
 digest. The service and Gmail watch remain running. If any Green/live gate fails,
 rollback pauses Scheduler, stops the watch, disables push delivery, restores the
@@ -681,6 +682,23 @@ follows:
   costs, and teardown. It links to rather than duplicates the presentation and
   operations details.
 
+The final health correction is the sole narrow exception to that documentation-only
+scope. Google Cloud reserves some paths ending in `z`, so the current contract
+replaces `/healthz` rather than retaining an unreachable alias:
+
+- `GET /health` is the image's only GET route and keeps the exact
+  `200 {"status":"ok"}` response with no downstream dependency check;
+- the image still exposes exactly five routes, and `/healthz` returns `404` locally;
+- Cloud Run uses one HTTP startup probe for `/health` on port `8080`, with the
+  Google sample's failure threshold `5`, initial delay `10s`, timeout `3s`, and
+  period `3s`;
+- the focused Red commands are `uv run pytest tests/test_health.py -q` before the
+  application route changes and `terraform -chdir=infra test` before the probe is
+  configured; neither failing state is committed; and
+- Green requires an immutable revision whose authenticated same-project internal
+  `GET /health` returns exact status/body, followed by read-only watch, Scheduler,
+  traffic, IAM, and complete-suite checks without stopping the service or watch.
+
 The focused validator is `uv run pytest tests/test_documentation.py -q`. Red must
 reach that validator and report the absent `README.md`, operations, presentation,
 runbook, Mermaid flow, or a specific stale pre-deployment marker. A dependency,
@@ -690,15 +708,38 @@ contracts, exactly one Mermaid block in the repository documentation, a parsed d
 duration within `10-15` minutes, and no frontend or PDF export dependency.
 
 After Refactor, rerun the focused validator, the current CI-equivalent Python,
-coverage, Ruff, mypy, Terraform, integration, and container gates. Reconcile the
-health boundary explicitly: the accepted digest must return exact
-`200 {"status":"ok"}` locally, while an authenticated request to deployed `/healthz`
-must be recorded as Cloud Run's reserved-path `404`, not invented as a live `200`.
-Use Ready/traffic plus a non-mutating authenticated route control for production
-serving evidence, then read the future-dated Gmail watch, enabled Scheduler jobs,
-private IAM, and accepted traffic. Record exact sanitized results here and in the PR.
-Do not renew or stop a healthy watch during the check; leave the accepted private
-service and watch running.
+coverage, Ruff, mypy, Terraform, integration, and container gates. The accepted
+digest must return exact `200 {"status":"ok"}` locally, the deployed revision must
+expose the matching `/health` HTTP startup probe, and an authenticated same-project
+internal request must return that exact status/body. Then read the future-dated Gmail
+watch, enabled Scheduler jobs, private IAM, and accepted traffic. Record exact
+sanitized results here and in the PR. Do not renew or stop a healthy watch during the
+check; leave the accepted private service and watch running.
+
+### Health correction Red
+
+The application and infrastructure checks failed on the intended missing contracts
+before either implementation change:
+
+```text
+uv run pytest tests/test_health.py -q
+exit 1
+1 failed, 1 warning in 0.76s
+reason: GET /health returned 404 instead of 200
+
+terraform -chdir=infra test
+exit 1
+6 passed, 1 failed
+reason: Cloud Run must gate startup on the HTTP /health readiness contract
+
+uv run pytest -q -s tests/live/test_gcp_acceptance.py::test_live_13_authenticated_smoke --live-config=credentials/live-acceptance.json
+exit 1
+AUTH-SMOKE pass=false code=cloud_run_startup_probe_invalid elapsed_ms=1479
+1 failed in 1.53s
+```
+
+No failing check was committed. The live failure was read-only and occurred before
+deployment mutation.
 
 ### Issue 14 observed validation
 
@@ -720,8 +761,8 @@ uv run pytest tests/test_documentation.py -q
 2 passed, 107 subtests passed in 0.02s
 ```
 
-The accepted digest and authenticated live controls exposed and reconciled the Cloud
-Run reserved-path boundary without changing the application or accepted revision:
+Initial Issue 14 verification exposed the former Cloud Run reserved-path mismatch.
+This evidence is historical and superseded by the health correction specified above:
 
 ```text
 DEPLOYED-DIGEST-LOCAL pass=true status=200 body_exact=true
@@ -778,8 +819,8 @@ git diff --check: exit 0, no output
 | Contract | Each provider-neutral interface against fakes and mocked vendor adapters | One shared behavior contract passes without network or paid calls. |
 | Terraform | Regional resources, IAM, authentication, scaling, lifecycle, quotas, and budgets with mocked providers | Formatting, offline initialization, validation, and Terraform tests pass; CI never applies. |
 | Integration | Public HTTP endpoints through a running `uvicorn` process with deterministic fakes | Complete success, retry, terminal, redelivery, and recovery flows pass over HTTP. This is the Playwright-equivalent layer because there is no browser UI. |
-| Container | The built non-root image and its production entry point | Image builds, starts, serves `GET /healthz`, and stops cleanly. |
-| Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | Ready/traffic and an authenticated operational route prove serving; the reserved live `/healthz` `404` agrees with the accepted-image `200` contract; watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
+| Container | The built non-root image and its production entry point | Image builds, starts, serves exact `GET /health`, rejects legacy `/healthz`, and stops cleanly. |
+| Authenticated smoke | The deployed private Cloud Run revision and configured operational resources | Authenticated same-project internal `GET /health` returns the exact image contract; Ready/traffic, watch, Scheduler, subscriptions, quotas, and scaling controls are observable. |
 | Live Gmail acceptance | The dedicated mailbox, deployed adapters, native search, and real threading | Five opt-in cases each produce exactly one correctly threaded reply within `120s`, expected state/labels, and sanitized evidence. |
 
 The current CI gate runs Ruff formatting and linting, strict mypy, the loopback
@@ -850,7 +891,7 @@ syntax error is not acceptable Red evidence.
 | Issue | Expected focused Red |
 | --- | --- |
 | 01 | Documentation validation reports the absent architecture document or required section. |
-| 02 | The health test reaches the service boundary and observes that `GET /healthz` is absent or does not return the frozen payload. |
+| 02 | The health test reaches the service boundary and observes that `GET /health` is absent or does not return the frozen payload. |
 | 03 | Mocked-provider Terraform evaluation reports an undeclared regional Cloud Run resource before any GCP resource is defined. |
 | 04 | Shared fake-gateway operations and OAuth bootstrap assertions fail because the gateway/command contract is absent. |
 | 05 | Synthetic plain/HTML/nested MIME and PDF/MP3/WAV/JPEG/PNG boundary fixtures fail because the pure parser is absent. |
@@ -874,7 +915,7 @@ and its commit and unmerged PR satisfy the repository contract.
 | Issue | Delivery gate |
 | --- | --- |
 | 01 | Architecture and acceptance documents pass focused documentation validation. |
-| 02 | Python 3.14 service scaffold, `GET /healthz`, locked toolchain, non-root container, and CI pass. |
+| 02 | Python 3.14 service scaffold, `GET /health`, locked toolchain, non-root container, and CI pass. |
 | 03 | Mocked-provider Terraform tests and all offline Terraform checks pass without apply. |
 | 04 | Gmail gateway contracts and installed-app OAuth bootstrap pass with Gmail mocked. |
 | 05 | Pure recursive MIME parsing and all supported fixture/boundary cases pass. |
@@ -897,8 +938,8 @@ requirement cannot silently lose coverage.
 | --- | --- | --- | --- |
 | DOC-01 | Required architecture/test sections exist, remain aligned, and introduce no application, infrastructure, frontend, or generated evidence | Unit/documentation validation | 01 |
 | TOOL-01 | Python 3.14, FastAPI, `uv`, committed lock, pytest/httpx, Ruff, mypy, Docker, Terraform, GitHub Actions, `src/`, and `tests/` form a clean-checkout backend-only toolchain | Unit, container, CI | 02, 12 |
-| API-01 | The image declares only `GET /healthz`, `POST /events/gmail`, `POST /jobs/process-message`, `POST /jobs/renew-watch`, and `POST /jobs/reconcile-unread`; Cloud Run reserves live `/healthz` and forwards the four operational routes | Unit, integration, authenticated smoke | 02, 10, 13, 14 |
-| API-02 | The accepted image has a stable health payload; deployed operational endpoints require Cloud Run IAM, reject anonymous callers, and use Ready/traffic plus authenticated route evidence because live `/healthz` is platform-reserved | Integration, container, authenticated smoke | 02, 03, 12-14 |
+| API-01 | The image declares only `GET /health`, `POST /events/gmail`, `POST /jobs/process-message`, `POST /jobs/renew-watch`, and `POST /jobs/reconcile-unread`; legacy `/healthz` is absent | Unit, integration, authenticated smoke | 02, 10, 13, 14 |
+| API-02 | The accepted image has a stable exact health payload; Cloud Run gates startup on the same `/health` route, deployed routes require IAM, and an authenticated same-project internal GET proves the live contract | Integration, container, Terraform, authenticated smoke | 02, 03, 12-14 |
 | DOMAIN-01 | `InboundEmail`, `Attachment`, `AttachmentInsight`, `Citation`, and `GeneratedReply` carry exactly the provider-neutral, bounded fields and never cross persistence boundaries | Unit, contract, integration | 04-12 |
 | PORT-01 | `GmailGateway`, `AttachmentAnalyzer`, `ReplyProvider`, `WorkPublisher`, and `ProcessingStore` fakes and adapters satisfy shared contracts | Contract, integration | 04, 06, 07, 09, 10, 12 |
 | GCP-01 | Cloud Run, Firestore, scratch storage, Artifact Registry, Scheduler, and user-managed secret replicas use `europe-west3`; Gemini uses `global` | Terraform, authenticated smoke | 03, 13 |
@@ -940,7 +981,7 @@ requirement cannot silently lose coverage.
 | DESIGN-01 | The final design matches deployed routes, resources, state/search/privacy behavior and owns exactly one readable Mermaid system flow | Documentation validation, authenticated smoke | 14 |
 | OPS-01 | Operations covers watch/OAuth renewal, replay, terminal/dead-letter recovery, provider switching, quotas, budgets, rollback, ordered teardown, and residual data | Documentation validation | 14 |
 | DEMO-01 | The authoritative Markdown presentation and parsed `10-15` minute five-case runbook include preflight, timings, outcomes, sanitized fallback, limitations, costs, and teardown without PDF tooling | Documentation validation | 14 |
-| FINAL-01 | Focused and complete suites are green; the authenticated reserved-path health result, accepted-image health payload, future watch, enabled Scheduler, private IAM, route reachability, and accepted traffic agree without stopping the service or watch | Documentation validation, authenticated smoke | 14 |
+| FINAL-01 | Focused and complete suites are green; authenticated `/health`, the startup probe, future watch, enabled Scheduler, private IAM, accepted traffic, and the immutable image agree without stopping the service or watch | Documentation validation, authenticated smoke | 14 |
 
 ## Issue 01 validation evidence
 

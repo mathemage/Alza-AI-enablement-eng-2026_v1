@@ -25,7 +25,7 @@ backlog.
   region is listed for [Cloud Run](https://cloud.google.com/run/docs/locations),
   [Firestore](https://docs.cloud.google.com/firestore/docs/locations), and
   [Cloud Storage](https://docs.cloud.google.com/storage/docs/bucket-locations).
-- Expose only `GET /healthz`, `POST /events/gmail`,
+- Expose only `GET /health`, `POST /events/gmail`,
   `POST /jobs/process-message`, `POST /jobs/renew-watch`, and
   `POST /jobs/reconcile-unread`. Cloud Run IAM authenticates every deployed request;
   push and Scheduler callers use Google OIDC identities, and the service has no
@@ -149,7 +149,7 @@ Follow `Spec → Red → Green → Refactor` with this self-contained execution 
 **Description:**
 
 Create the smallest typed FastAPI service and deterministic local/CI toolchain. Begin
-with a failing test for `GET /healthz`, then add `pyproject.toml`, committed `uv.lock`,
+with a failing test for `GET /health`, then add `pyproject.toml`, committed `uv.lock`,
 the `src/` package, `tests/`, `.env.example`, a minimal non-root Dockerfile, and a
 GitHub Actions workflow. Audit the existing `.gitignore` instead of replacing it.
 
@@ -158,7 +158,7 @@ GitHub Actions workflow. Audit the existing `.gitignore` instead of replacing it
 - [ ] The committed project targets Python `3.14` and uses current compatible
   releases of FastAPI, `uv`, `pytest`, `httpx`, Ruff, and mypy with no frontend
   dependencies.
-- [ ] A focused test proves `GET /healthz` returns `200` and a minimal stable JSON
+- [ ] A focused test proves `GET /health` returns `200` and a minimal stable JSON
   health payload; the test is observed failing before the route exists.
 - [ ] `pyproject.toml`, `uv.lock`, `src/`, `tests/`, `.env.example`, the Dockerfile,
   and `.github/workflows/ci.yml` are minimal and sufficient for a clean checkout.
@@ -173,13 +173,13 @@ GitHub Actions workflow. Audit the existing `.gitignore` instead of replacing it
 **Prompt for an AI coding agent:**
 
 ```text
-Implement only Issue 02, “Scaffold the Python service and CI.” Build the minimal Python `3.14` FastAPI foundation, begin with `GET /healthz`, commit `uv.lock`, audit the existing `.gitignore`, and add no cloud integration or frontend code.
+Implement only Issue 02, “Scaffold the Python service and CI.” Build the minimal Python `3.14` FastAPI foundation, begin with `GET /health`, commit `uv.lock`, audit the existing `.gitignore`, and add no cloud integration or frontend code.
 
 Follow `Spec → Red → Green → Refactor` with this self-contained execution contract:
 1. Read `AGENTS.md`. Use or create exactly one GitHub issue for this backlog item, and confirm that Issue 01 is merged before continuing.
 2. Update `main`, then create `issue-<number>-<slug>`, replacing `<number>` with the GitHub issue number and `<slug>` with a concise issue slug.
 3. Spec: update the relevant sections of `docs/design.md` and `docs/test-plan.md` before implementation, including exact health behavior and local/CI commands.
-4. Red: add and run a focused failing `GET /healthz` test before creating the route, and record the expected Red result. Do not commit a failing test.
+4. Red: add and run a focused failing `GET /health` test before creating the route, and record the expected Red result. Do not commit a failing test.
 5. Green: add the smallest scaffold and FastAPI implementation that makes the focused test pass.
 6. Refactor: simplify without expanding scope, then run the focused test and the complete test suite, including Ruff and mypy, and record the exact results.
 7. Commit with `type(scope): Capitalized summary #<issue-number>`, push the branch, and open a PR containing `Closes #<issue-number>` plus the exact Red, focused, and complete-suite results.
@@ -626,7 +626,7 @@ UI.
   statuses are correct.
 - [ ] CI runs Ruff, mypy, unit/contract/Terraform/integration tests, and coverage with
   no cloud credentials or paid calls and enforces at least `85%` line coverage.
-- [ ] CI builds the Docker image, starts it, verifies `GET /healthz`, and shuts it
+- [ ] CI builds the Docker image, starts it, verifies `GET /health`, and shuts it
   down cleanly; the same commands pass locally from a clean checkout.
 
 **Prompt for an AI coding agent:**
@@ -666,7 +666,8 @@ Leave the healthy service and active watch running for the user.
 - [ ] Terraform is applied outside CI, secret versions are added outside Git and
   Terraform state, an immutable image is deployed, and Cloud Run has no public
   invoker.
-- [ ] Authenticated `GET /healthz` passes, the Gmail watch is active, Scheduler jobs
+- [ ] Authenticated `GET /health` passes (replacing Cloud Run's reserved `/healthz`
+  path), the Gmail watch is active, Scheduler jobs
   are enabled, subscriptions are healthy, and the configured maximum instance and
   quota controls are visible.
 - [ ] Five live messages cover: plain text; `PDF`; one message with `MP3` and `WAV`;
@@ -723,7 +724,8 @@ and Gmail watch before closing the work.
 - [ ] An authoritative Markdown presentation and demo runbook fit `10–15` minutes and
   include preflight, five-case sequence, timings, expected outcomes, sanitized
   fallback evidence, limitations, costs, and teardown; no PDF exporter is added.
-- [ ] The final check proves authenticated `GET /healthz`, active Gmail watch, enabled
+- [ ] The final check proves authenticated `GET /health` (replacing Cloud Run's
+  reserved `/healthz` path), active Gmail watch, enabled
   Scheduler jobs, and a green complete suite while leaving the healthy service
   running.
 

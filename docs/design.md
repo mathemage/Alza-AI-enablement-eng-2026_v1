@@ -53,7 +53,7 @@ Ruff format/check, mypy, black-box, complete pytest, coverage, and offline Terra
 commands. Coverage measures `alza_ai` line execution and fails below `85%`; default
 tests inject deterministic fakes and have no credential, cloud, live-search, or paid
 provider path. CI builds the Dockerfile, confirms its configured user is neither
-empty nor root, starts the production entry point, waits for exact `GET /healthz`
+empty nor root, starts the production entry point, waits for exact `GET /health`
 status/body, and always stops the container. The image listens on port `8080` and
 includes no development dependency or credential.
 
@@ -84,7 +84,7 @@ flowchart LR
     workPush -->|"POST /jobs/process-message"| service
     notificationPush -. "exhausted delivery" .-> deadLetter
     workPush -. "exhausted delivery" .-> deadLetter --> deadLetterMonitor
-    smoke -.->|"local GET /healthz; live path reserved"| service
+    smoke -.->|"startup probe + authenticated GET /health"| service
     scheduler -->|"POST /jobs/renew-watch"| service
     scheduler -->|"POST /jobs/reconcile-unread"| service
     service <--> firestore
@@ -167,14 +167,12 @@ temporary scratch object described above.
 
 The application image declares exactly five routes. Cloud Run IAM authenticates every
 forwarded deployed request. There is no `allUsers` invoker, public route, shared
-webhook secret, or alternate application endpoint. Cloud Run reserves some URL paths
-ending in `z`, so its default `run.app` URL intercepts `/healthz` with `404` before
-the request reaches this revision; the other four routes form the reachable deployed
-application surface.
+webhook secret, or alternate application endpoint. All five routes are compatible
+with the Cloud Run URL surface.
 
 | Route | Configured caller and behavior | Successful/terminal result | Retryable result |
 | --- | --- | --- | --- |
-| `GET /healthz` | Local ASGI/container and accepted-image liveness only; Cloud Run reserves the deployed path | Application boundary: `200` with exactly `{"status":"ok"}`; default deployed URL: platform `404` | No application `503`; production readiness uses revision Ready/traffic and authenticated operational-route evidence |
+| `GET /health` | Cloud Run HTTP startup probe, local/container smoke, and approved authenticated internal callers | `200` with exactly `{"status":"ok"}` | No application `503`; a process that cannot serve has no successful response |
 | `POST /events/gmail` | Dedicated `gmail-notifications-push` OIDC identity; validate Pub/Sub envelope and configured mailbox, then synchronize history | `204` after complete publish/cursor commit; duplicate, malformed, or wrong-mailbox envelopes are sanitized terminal acknowledgments | `503` for Gmail, transaction, lease, or publication failures |
 | `POST /jobs/process-message` | Dedicated `email-work-push` OIDC identity; process one versioned metadata work item | `204` for success, a final duplicate, or a terminal outcome only after terminal handling | `503` for an in-flight duplicate, while a transient failure remains retryable, or when terminal bookkeeping cannot complete |
 | `POST /jobs/renew-watch` | Dedicated Scheduler OIDC identity; renew the configured mailbox watch idempotently | `204` | `503` for a transient Gmail or persistence failure |
@@ -187,13 +185,12 @@ configured with its dedicated identity, but the application does not inspect cal
 claims or enforce a different identity per route. The runtime identity is not an
 invoker and no public principal has access.
 
-At the application boundary, `GET /healthz` performs no cloud, credential, or
-downstream dependency check. A successful local or accepted-image response has status
-`200`, content type `application/json`, and the exact UTF-8 body `{"status":"ok"}`.
-The accepted Cloud Run default URL cannot expose that route because of the platform's
-reserved-path limitation. This is a deployment boundary, not a different application
-payload or an application outage; production proof combines revision Ready/traffic,
-private IAM, and successful authenticated operational calls.
+At the application boundary, `GET /health` performs no cloud, credential, or
+downstream dependency check. A successful local, accepted-image, startup-probe, or
+authenticated internal response has status `200`, content type `application/json`,
+and the exact UTF-8 body `{"status":"ok"}`. The former `/healthz` route is absent
+because Cloud Run reserves some paths ending in `z`. Production proof combines that
+exact authenticated response with revision Ready/traffic and private IAM.
 
 For Pub/Sub, any `2xx` is an acknowledgment and a non-`2xx` requests redelivery.
 Poison envelopes that cannot identify a source message are acknowledged after a
@@ -798,7 +795,7 @@ immutable registry digest.
 | Per-message ceilings | Attachment/generation/search calls `5/1/1`; reply output `2048` tokens |
 | Operations | Scheduler jobs enabled, push subscriptions active, future-dated Gmail watch |
 | Cost control | Project budget alert `480 CZK`; an alert is not a hard spending cap |
-| Health boundary | Accepted digest returns exact local `200 {"status":"ok"}`; Cloud Run reserves deployed `/healthz`, so Ready/traffic and authenticated operational routes prove serving health |
+| Health boundary | HTTP startup probe targets `/health`; accepted-image and authenticated same-project internal GET both return exact `200 {"status":"ok"}` |
 
 The production entry point composes only existing adapters: Gmail with the verified
 refresh token and OAuth client, Firestore processing and synchronization stores,
@@ -815,14 +812,12 @@ digest-pinned, exactly one revision receives traffic, ingress is internal-only,
 minimum instances are `0`, maximum instances are `1`, concurrency is `1`, timeout is
 `115s`, the four application ceilings match the approved values, and IAM contains no
 public principal. The accepted immutable image runs locally as its non-root user and
-returns exact `200 {"status":"ok"}`. An authenticated deployed `GET /healthz` returns
-the documented Cloud Run reserved-path `404` before reaching the revision. In
-production, Ready/traffic status and successful authenticated internal calls to
-`renew-watch`, `reconcile-unread`, Gmail push, and work processing prove the serving
-path without opening ingress; anonymous invocation remains unauthorized. Both
-Scheduler jobs must be enabled with their frozen schedules and OIDC audience, both
-push subscriptions must be healthy with their frozen retry/dead-letter controls, and
-the dead-letter monitor must remain available.
+returns exact `200 {"status":"ok"}` from `GET /health`. The configured HTTP startup
+probe uses that same route, and an authenticated same-project internal GET returns
+the exact status/body without opening ingress; anonymous invocation remains
+unauthorized. Both Scheduler jobs must be enabled with their frozen schedules and
+OIDC audience. Both push subscriptions must be healthy with their frozen
+retry/dead-letter controls, and the dead-letter monitor must remain available.
 
 Gmail OAuth requests offline consent and only
 `https://www.googleapis.com/auth/gmail.modify`. The bootstrap must verify the Gmail
@@ -893,9 +888,11 @@ module defines this exact inventory:
 
 The Cloud Run service uses `INGRESS_TRAFFIC_INTERNAL_ONLY`, IAM invocation, zero
 minimum instances, configurable maximum instances no greater than `2`, container
-concurrency `1`, one vCPU, 1 GiB memory, and a `115s` request timeout. Authenticated
-smoke originates from an authorized same-project/internal execution context because
-ingress is not opened for testing. Both primary subscriptions retain messages for
+concurrency `1`, one vCPU, 1 GiB memory, and a `115s` request timeout. Its HTTP
+startup probe calls `/health` on port `8080` after `10s`, every `3s`, with a `3s`
+timeout and failure threshold `5`. Authenticated smoke originates from an authorized
+same-project/internal execution context because ingress is not opened for testing.
+Both primary subscriptions retain messages for
 seven days, acknowledge within `120s`, retry from `10s` to `600s`, and forward after
 `5` delivery attempts to the shared dead-letter topic. The dead-letter monitor also
 retains messages for seven days.
@@ -1033,6 +1030,8 @@ Spec phase:
   same-project Pub/Sub/Scheduler access to internal services;
 - [Cloud Run known issues](https://cloud.google.com/run/docs/known-issues#reserved-url-paths) for
   reserved URL paths, including some paths ending in `z`;
+- [Cloud Run health checks](https://cloud.google.com/run/docs/configuring/healthchecks)
+  for the HTTP `/health` startup probe and readiness behavior;
 - [authenticated Pub/Sub push](https://cloud.google.com/pubsub/docs/authenticate-push-subscriptions)
   for OIDC identity, audience, and service-agent permissions;
 - [Gmail push notifications](https://developers.google.com/workspace/gmail/api/guides/push)

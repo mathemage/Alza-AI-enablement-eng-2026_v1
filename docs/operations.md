@@ -33,16 +33,12 @@ uv run pytest -q -s tests/live/test_gmail_acceptance.py --live-config="$LIVE_CON
 ```
 
 The Gmail check reads the future watch expiry, activation state, labels, and accepted
-case records; it sends no message and does not renew the watch. Cloud Run reserves
-some URL paths ending in `z`, including this deployment's `/healthz` path. The route
-therefore remains the local/accepted-image health contract, where it returns exact
-`200 {"status":"ok"}`; the default deployed `run.app` URL returns a platform `404`
-before the request reaches the revision.
+case records; it sends no message and does not renew the watch. The service's
+HTTP startup probe and authenticated health check both use the Cloud Run-compatible
+`GET /health` route and require exact `200 {"status":"ok"}`.
 
-For a non-mutating deployed-route control, run an authenticated `GET` against the
-POST-only reconciliation route from an approved same-project internal execution
-context. Exact status `405` proves the request reached FastAPI without running
-reconciliation:
+Run the non-mutating health check from an approved same-project internal execution
+context:
 
 ```text
 SERVICE_URL="$(gcloud run services describe "$SERVICE" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
@@ -54,18 +50,22 @@ mint the approved executor identity token without displaying it:
 ```text
 METADATA_ROOT='http://metadata.google.internal/computeMetadata/v1'
 IDENTITY_TOKEN="$(curl --fail --silent --show-error --header 'Metadata-Flavor: Google' "$METADATA_ROOT/instance/service-accounts/default/identity?audience=$SERVICE_URL&format=full")"
-ROUTE_STATUS="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --header "Authorization: Bearer $IDENTITY_TOKEN" "$SERVICE_URL/jobs/reconcile-unread")"
-test "$ROUTE_STATUS" = '405'
-unset IDENTITY_TOKEN METADATA_ROOT ROUTE_STATUS
+HEALTH_RESULT="$(curl --silent --show-error --write-out '\n%{http_code}' --header "Authorization: Bearer $IDENTITY_TOKEN" "$SERVICE_URL/health")"
+HEALTH_STATUS="${HEALTH_RESULT##*$'\n'}"
+HEALTH_BODY="${HEALTH_RESULT%$'\n'*}"
+test "$HEALTH_STATUS" = '200'
+test "$HEALTH_BODY" = '{"status":"ok"}'
+unset HEALTH_BODY HEALTH_RESULT HEALTH_STATUS IDENTITY_TOKEN METADATA_ROOT
 ```
 
 Internal ingress and Cloud Run IAM are independent checks; a valid token from the
 public internet is insufficient. If no approved internal executor exists, rely on
-Ready/traffic state and the already scheduled authenticated operational calls; do not
-open ingress merely to probe. Routine observation must not call `renew-watch`,
-`reconcile-unread`, or `users.stop`. See the
-[Cloud Run reserved-path limitation](https://cloud.google.com/run/docs/known-issues#reserved-url-paths)
-before changing or interpreting the image-local health route.
+Ready/traffic and startup-probe state, and report current authenticated health as
+unverified; do not open ingress merely to probe. Routine observation must not call
+`renew-watch`, `reconcile-unread`, or `users.stop`. Google documents why the former
+`/healthz` route is unusable under its
+[Cloud Run reserved-path limitation](https://cloud.google.com/run/docs/known-issues#reserved-url-paths).
+Do not restore it as an alias.
 
 Use Cloud Monitoring to read the undelivered-message count for
 `dead-letter-monitor`, and Cloud Logging only through sanitized structured fields.
@@ -123,7 +123,8 @@ The accepted deployment has `RESPONSE_PROVIDER=gemini` and
 reviewed configuration change, an `openrouter-api-key` secret version added outside
 Terraform, an `OPENROUTER_API_KEY` Secret Manager reference, the selected model, and a
 new digest-pinned immutable revision. Verify private IAM, Ready/traffic state, the
-accepted-image health contract, and a controlled live case before moving all traffic.
+`/health` startup probe and authenticated exact response, and a controlled live case
+before moving all traffic.
 There is no application-level provider fallback, and attachment analysis still uses
 Gemini at its global endpoint after reply generation switches to OpenRouter.
 
@@ -140,11 +141,11 @@ charges.
 Rollback never changes internal ingress or grants a public invoker. Pause both
 Scheduler jobs, stop new Gmail notifications, and let or deliberately quiesce pending
 Pub/Sub work. Move `100%` traffic to a previously accepted immutable digest, verify
-Ready/traffic state, the accepted-image health contract, an authenticated operational
-route, and the Gmail profile, then restore push delivery, renew the watch if required,
-and resume the jobs. If no healthy revision exists, keep processing stopped and
-proceed to teardown. Disable superseded secret versions only after the restored
-revision is proven healthy.
+Ready/traffic state, its configured startup probe, authenticated exact `GET /health`,
+and the Gmail profile, then restore push delivery, renew the watch if required, and
+resume the jobs. If no healthy revision exists, keep processing stopped and proceed
+to teardown. Disable superseded secret versions only after the restored revision is
+proven healthy.
 
 ## Ordered teardown
 

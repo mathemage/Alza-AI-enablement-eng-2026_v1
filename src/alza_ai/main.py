@@ -33,8 +33,8 @@ def create_app(
     coordinator = cast(_ProcessingCoordinator | None, processing_coordinator)
     synchronizer = cast(_MailboxSynchronizer | None, mailbox_synchronizer)
 
-    @application.get("/healthz")
-    async def healthz() -> dict[str, str]:
+    @application.get("/health")
+    async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @application.post("/events/gmail")

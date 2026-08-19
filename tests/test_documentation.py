@@ -55,7 +55,7 @@ class DocumentationContractTests(unittest.TestCase):
                 self.assertIn(heading, test_plan)
 
         frozen_design_terms = (
-            "GET /healthz",
+            "GET /health",
             "POST /events/gmail",
             "POST /jobs/process-message",
             "POST /jobs/renew-watch",
@@ -192,6 +192,8 @@ class DocumentationContractTests(unittest.TestCase):
             )
         diagram_match = re.search(r"```mermaid\n(.*?)```", design, flags=re.DOTALL)
         diagram = diagram_match.group(1) if diagram_match else ""
+        if "/healthz" in diagram:
+            problems.append("DESIGN-01 diagram:legacy /healthz route")
 
         readme = documents.get(README, "")
         readme_headings = re.findall(r"^## .+$", readme, flags=re.MULTILINE)
@@ -215,7 +217,7 @@ class DocumentationContractTests(unittest.TestCase):
         for term in (
             "gmail-notifications",
             "gmail-notifications-push",
-            "/healthz",
+            "/health",
             "/events/gmail",
             "email-work",
             "email-work-push",
@@ -238,8 +240,8 @@ class DocumentationContractTests(unittest.TestCase):
         for term in (
             "alza-ai-00005-cfq",
             "sha256:cf2013a13a82847e48812282a4217bd624e8e3ff6f45c313ad8ed2ced938957f",
-            "reserved-path",
-            "https://cloud.google.com/run/docs/known-issues#reserved-url-paths",
+            "HTTP startup probe",
+            "https://cloud.google.com/run/docs/configuring/healthchecks",
         ):
             if term not in design:
                 problems.append(
@@ -272,12 +274,10 @@ class DocumentationContractTests(unittest.TestCase):
             "OAuth grant",
             "local Terraform state",
             "IDENTITY_TOKEN",
+            "GET /health",
             '{"status":"ok"}',
-            "Cloud Run reserves",
-            "platform `404`",
-            "POST-only",
-            "405",
-            "accepted-image health contract",
+            "HTTP startup probe",
+            "same-project internal",
         ):
             if term.casefold() not in operations.casefold():
                 problems.append(f"OPS-01 docs/operations.md:missing:{term}")
@@ -291,7 +291,7 @@ class DocumentationContractTests(unittest.TestCase):
             "Limitations",
             "Costs",
             "Operations and teardown",
-            "Cloud Run reserves",
+            "HTTP startup probe",
         ):
             if term not in presentation:
                 problems.append(f"DEMO-01 docs/presentation.md:missing:{term}")
@@ -329,8 +329,9 @@ class DocumentationContractTests(unittest.TestCase):
             "Limitations",
             "Costs",
             "Teardown",
-            "reserved `/healthz`",
-            "claim a live `200`",
+            "GET /health",
+            "startup probe",
+            '`200 {"status":"ok"}`',
         ):
             if term.casefold() not in runbook.casefold():
                 problems.append(f"DEMO-01 docs/demo-runbook.md:missing:{term}")
@@ -345,6 +346,22 @@ class DocumentationContractTests(unittest.TestCase):
                 )
         if (ROOT / "package.json").exists():
             problems.append("DEMO-01 package.json:frontend tooling is out of scope")
+
+        source = (ROOT / "src" / "alza_ai" / "main.py").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        infrastructure = (ROOT / "infra" / "main.tf").read_text(encoding="utf-8")
+        if (
+            '@application.get("/health")' not in source
+            or '@application.get("/healthz")' in source
+        ):
+            problems.append("FINAL-01 src/alza_ai/main.py:health route is stale")
+        if "http://127.0.0.1:8080/health" not in workflow or "/healthz" in workflow:
+            problems.append("FINAL-01 .github/workflows/ci.yml:health smoke is stale")
+        for term in ("startup_probe {", 'path = "/health"', "port = 8080"):
+            if term not in infrastructure:
+                problems.append(f"FINAL-01 infra/main.tf:missing:{term}")
 
         self.assertFalse(problems, "\n".join(problems))
 

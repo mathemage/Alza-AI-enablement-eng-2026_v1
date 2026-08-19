@@ -9,7 +9,7 @@ to [operations](operations.md).
 
 | Time | Segment | Action and Expected outcome |
 | --- | --- | --- |
-| `00:00-01:30` | Preflight | From the repository root, show current Ready/traffic state, private IAM, enabled Scheduler jobs, future-dated Gmail watch, and the reconciled health-route boundary. Expected outcome: the sanitized checks pass and `/healthz` is described accurately as an accepted-image contract behind a Cloud Run reserved path; otherwise use the fallback below. |
+| `00:00-01:30` | Preflight | From the repository root, show current Ready/traffic state, private IAM, the `/health` HTTP startup probe, exact authenticated health response, enabled Scheduler jobs, and future-dated Gmail watch. Expected outcome: every sanitized check passes; otherwise use the fallback below. |
 | `01:30-02:30` | Outcome and scope | State the one-mailbox, current-message problem and the private backend outcome. Expected outcome: the audience knows what the MVP does and does not do. |
 | `02:30-04:00` | Deployed flow | Walk the single diagram in the design from Gmail push through both Pub/Sub paths, Cloud Run, Firestore, scratch storage, native search, recovery, secrets, and observability. Expected outcome: the trust and data boundaries are clear. |
 | `04:00-04:45` | Plain case | Show the sanitized `LIVE-01-plain` verifier line. Expected outcome: one reply, same thread, `completed`, correct headers and labels, no attachment, under `120s`. |
@@ -33,11 +33,10 @@ uv run pytest -q -s tests/live/test_gmail_acceptance.py --live-config=credential
 
 These checks read the accepted deployment, watch, and existing five source/reply
 pairs; they do not send new messages, renew or stop the watch, or change cloud state.
-Use the read-only authenticated route control and reserved `/healthz` explanation in
-[operations](operations.md#routine-read-only-checks); do not present the platform
-`404` as an application outage or claim a live `200`. Never display the ignored
-configuration, mailbox content, identifiers, URLs, credentials, or raw cloud
-responses.
+Use the read-only authenticated `GET /health` procedure in
+[operations](operations.md#routine-read-only-checks) and require exact
+`200 {"status":"ok"}`. Never display the ignored configuration, mailbox content,
+identifiers, URLs, credentials, or raw cloud responses.
 
 ## Sanitized fallback
 
