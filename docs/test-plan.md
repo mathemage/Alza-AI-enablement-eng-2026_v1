@@ -850,6 +850,47 @@ CONTAINER-SMOKE pass=true nonroot=true status=200 body_exact=true legacy_404=tru
 git diff --check: exit 0, no output
 ```
 
+## Issue 33 executable contract
+
+Issue 33 replaces the startup-snapshot sender allowlist with a live policy the operator
+can widen during a presentation. The contract is frozen as follows before
+implementation:
+
+- The allowlist owns Firestore document `runtime-config/sender-policy`, field
+  `allowed_senders`, a list of strings. `SenderPolicy` holds the dedicated mailbox and
+  an entry source, and resolves the source on every message, so an edit takes effect on
+  the next processed message without a restart, revision, or secret version.
+- `SenderPolicyStore.allowed_senders` reads that document and raises
+  `ProcessingStoreError` with `sender_policy_unavailable` when Firestore is unreachable,
+  so the coordinator retries instead of accepting or terminally rejecting the sender.
+- An entry is one normalized address such as `person@example.test`, or one whole domain
+  written as `@example.test`. A domain entry matches only the exact normalized sender
+  domain: `@example.test` never admits `sub.example.test`, `notexample.test`, or
+  `example.test.attacker.test`. Entries are IDNA and case normalized, unparsable entries
+  are ignored, and a missing, empty, or entirely unparsable document rejects every
+  sender with `policy_sender_not_allowed`.
+- Mailbox-self and automated-mail rejection keeps precedence, so a domain entry that
+  covers the dedicated mailbox still yields `policy_reply_loop`.
+- `RuntimeSettings` no longer reads `allowed_senders`; the OAuth client secret carries
+  only its installed client, `mailbox`, and `mailbox_key`.
+- Terraform creates the document from `initial_allowed_senders`, default `["@alza.cz"]`
+  with non-empty validated entries, and ignores later `fields` changes so operator edits
+  are not drift. The runtime service account keeps only `roles/datastore.user`.
+- `alza-ai allowlist list|add|remove` reads and writes that document under an explicit
+  `--project`, normalizes and deduplicates entries, rejects a malformed entry with a
+  sanitized message and exit status `1`, and prints the resulting entries.
+
+The focused Red commands are
+`uv run pytest tests/test_processing.py tests/test_reliability.py tests/test_runtime.py tests/test_cli.py tests/test_documentation.py -q`
+and `terraform -chdir=infra test`. Red must fail only on the missing live policy,
+operator command, Terraform seed, and documentation; a dependency, credential, or
+network failure is not acceptable Red, and no failing state is committed. Green requires
+the smallest code, configuration, and text that satisfy the contract, then the complete
+Python, Ruff, mypy, integration, container, and Terraform gates. Delivery requires an
+immutable-digest revision, read-only authenticated smoke and five-case Gmail acceptance,
+and one live acceptance in which a sender outside the allowlist is admitted by adding a
+domain entry with the operator command and no deployment.
+
 ## Test levels and phase gates
 
 | Level | Boundary | Required gate |
@@ -1012,6 +1053,8 @@ requirement cannot silently lose coverage.
 | FAIL-02 | Terminal MIME/policy failures persist terminal state, apply `AI/Error`, leave unread, and acknowledge only after terminal handling succeeds | Unit, contract, integration | 09, 11, 12 |
 | FAIL-03 | Exhausted delivery reaches the shared dead-letter path and is observable without content; terminal records are skipped by reconciliation | Terraform, integration, authenticated smoke | 03, 10, 11, 13 |
 | SEC-01 | Sender allowlist, self/automated/bulk loop rejection, HTML escaping, citation scheme/host validation, and secret handling resist unsafe inputs | Unit, integration | 04, 08, 11, 12 |
+| SEC-02 | The sender allowlist resolves per message from Firestore, accepts address and exact-domain entries, keeps loop rejection first, fails closed on an empty document, and retries an unavailable read | Unit, contract, integration, live Gmail | 33 |
+| OPS-02 | Terraform seeds the allowlist document once and ignores operator edits, and `alza-ai allowlist` lists, adds, and removes entries live without a deployment | Unit, Terraform, documentation validation, live Gmail | 33 |
 | PRIV-01 | Gmail notifications contain only the Gmail-required mailbox address/history ID; `email-work`, Firestore, logs, Terraform state, HTTP responses, and evidence contain no bodies, prompts, replies, attachment bytes, extracted text, transcripts, insights, addresses, tokens, or secrets | Unit, Terraform, integration, authenticated smoke, live Gmail | 03-14 |
 | OBS-01 | Sanitized logs contain correlation/opaque message IDs, stage/state, provider/model, retry class, error code, and per-stage/total latency only | Unit, integration, authenticated smoke | 11-13 |
 | TIME-01 | Internal processing stops by `105s`, below the `115s` request timeout; every live case finishes within `120s` | Unit, integration, authenticated smoke, live Gmail | 03, 11-13 |
