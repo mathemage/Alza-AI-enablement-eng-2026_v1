@@ -18,7 +18,6 @@ from alza_ai.runtime import (
 PROJECT = "test-project"
 MAILBOX = "dedicated@example.test"
 MAILBOX_KEY = "opaque-mailbox"
-SENDER = "allowed@example.test"
 REFRESH_TOKEN = "owned-refresh-token"
 CLIENT_SECRET = "owned-client-secret"
 
@@ -32,7 +31,6 @@ def runtime_environment(**overrides: str) -> dict[str, str]:
         },
         "mailbox": MAILBOX,
         "mailbox_key": MAILBOX_KEY,
-        "allowed_senders": [SENDER],
     }
     token = {"refresh_token": REFRESH_TOKEN, "scopes": [GMAIL_MODIFY_SCOPE]}
     environment = {
@@ -54,7 +52,7 @@ def test_runtime_13_loads_only_explicit_valid_secret_backed_configuration() -> N
     assert settings.scratch_bucket == "scratch-bucket"
     assert settings.mailbox == MAILBOX
     assert settings.mailbox_key == MAILBOX_KEY
-    assert settings.allowed_senders == (SENDER,)
+    assert not hasattr(settings, "allowed_senders")
     assert settings.gmail_topic == f"projects/{PROJECT}/topics/gmail-notifications"
     assert settings.work_topic == f"projects/{PROJECT}/topics/email-work"
     assert settings.credentials.refresh_token == REFRESH_TOKEN
@@ -106,6 +104,7 @@ def test_runtime_13_builds_the_existing_concrete_adapters(
         return factory
 
     firestore_client = object()
+    sender_policy_store = _FakeSenderPolicyStore()
     pubsub_client = object()
     processing_store = object()
     synchronization_store = object()
@@ -127,6 +126,11 @@ def test_runtime_13_builds_the_existing_concrete_adapters(
     )
     monkeypatch.setattr(
         runtime_module, "ProcessingStore", record("processing_store", processing_store)
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "SenderPolicyStore",
+        record("sender_policy_store", sender_policy_store),
     )
     monkeypatch.setattr(
         runtime_module,
@@ -161,6 +165,7 @@ def test_runtime_13_builds_the_existing_concrete_adapters(
     assert gmail.labels == ("AI/Processed", "AI/Error")
     assert calls["firestore"] == ((), {"project": PROJECT})
     assert calls["processing_store"] == ((firestore_client,), {})
+    assert calls["sender_policy_store"] == ((firestore_client,), {})
     assert calls["synchronization_store"] == ((firestore_client,), {})
     assert calls["storage"] == ((), {"bucket_name": "scratch-bucket"})
     assert calls["model"] == ((), {"project_id": PROJECT, "model": "gemini-3.6-flash"})
@@ -178,6 +183,7 @@ def test_runtime_13_builds_the_existing_concrete_adapters(
     sender_policy = coordinator_kwargs["sender_policy"]
     assert isinstance(sender_policy, SenderPolicy)
     assert sender_policy.mailbox_address == MAILBOX
+    assert sender_policy.entries == sender_policy_store.allowed_senders
     assert synchronizer_kwargs["topic_name"] == settings.gmail_topic
 
 
@@ -205,6 +211,11 @@ def test_runtime_13_production_app_injects_both_coordinators() -> None:
         return health.status_code, health.content, invalid.status_code
 
     assert asyncio.run(exercise()) == (200, b'{"status":"ok"}', 204)
+
+
+class _FakeSenderPolicyStore:
+    def allowed_senders(self) -> tuple[str, ...]:
+        return ()
 
 
 class _FakeGmail:

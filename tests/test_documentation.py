@@ -365,6 +365,52 @@ class DocumentationContractTests(unittest.TestCase):
 
         self.assertFalse(problems, "\n".join(problems))
 
+    def test_issue_33_sec_02_ops_02_live_sender_allowlist(self) -> None:
+        problems: list[str] = []
+        design = DESIGN.read_text(encoding="utf-8")
+        operations = OPERATIONS.read_text(encoding="utf-8")
+        presentation = PRESENTATION.read_text(encoding="utf-8")
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        test_plan = TEST_PLAN.read_text(encoding="utf-8")
+
+        for term in (
+            "runtime-config/sender-policy",
+            "@alza.cz",
+            "sender_policy_unavailable",
+            "alza-ai allowlist",
+        ):
+            if term not in design:
+                problems.append(f"SEC-02 docs/design.md:missing:{term}")
+        for term in (
+            "## Sender allowlist",
+            "alza-ai allowlist list",
+            "alza-ai allowlist add",
+            "alza-ai allowlist remove",
+            "runtime-config/sender-policy",
+            "without a deployment",
+        ):
+            if term not in operations:
+                problems.append(f"OPS-02 docs/operations.md:missing:{term}")
+        if "Live sender allowlist" not in presentation:
+            problems.append("OPS-02 docs/presentation.md:missing:Live sender allowlist")
+        for term in ("Sender allowlist", "alza-ai allowlist add"):
+            if term not in runbook:
+                problems.append(f"OPS-02 docs/demo-runbook.md:missing:{term}")
+        for matrix_id in ("SEC-02", "OPS-02"):
+            if f"| {matrix_id} |" not in test_plan:
+                problems.append(f"OPS-02 docs/test-plan.md:missing matrix:{matrix_id}")
+
+        infrastructure = (ROOT / "infra" / "main.tf").read_text(encoding="utf-8")
+        if "google_firestore_document" in infrastructure:
+            problems.append(
+                "OPS-02 infra/main.tf:Terraform must not own allowlist data"
+            )
+        runtime = (ROOT / "src" / "alza_ai" / "runtime.py").read_text(encoding="utf-8")
+        if '"allowed_senders"' in runtime:
+            problems.append("SEC-02 src/alza_ai/runtime.py:secret still owns the list")
+
+        self.assertFalse(problems, "\n".join(problems))
+
 
 if __name__ == "__main__":
     unittest.main()

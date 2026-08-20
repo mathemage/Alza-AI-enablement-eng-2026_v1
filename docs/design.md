@@ -802,8 +802,10 @@ refresh token and OAuth client, Firestore processing and synchronization stores,
 the metadata-only Pub/Sub work publisher, regional scratch storage, Gemini attachment
 analysis, and the selected reply provider. Non-secret settings identify the explicit
 project, `europe-west3`, `global` Gemini location, scratch bucket, topic resource,
-opaque mailbox key, dedicated mailbox, and normalized sender allowlist. Cloud Run
-reads secret versions through Secret Manager references. Startup validates all
+opaque mailbox key, and dedicated mailbox. The sender allowlist is not deployment
+configuration: it lives in Firestore document `runtime-config/sender-policy` and is
+resolved on every message. Cloud Run reads secret versions through Secret Manager
+references. Startup validates all
 required selected-provider configuration without printing values; there is no
 test-only route or fallback adapter in the deployed revision.
 
@@ -932,6 +934,10 @@ require the same review.
   dedicated mailbox itself, `Auto-Submitted` messages other than `no`, bulk/list/junk
   precedence, list mail, and auto-response-suppressed mail is terminally rejected to
   prevent loops. Reconciliation then skips the terminal record.
+- The allowlist is operator data, not deployment configuration. Terraform owns no
+  Firestore content, so `runtime-config/sender-policy` is created and edited only by
+  `alza-ai allowlist`, and an unreadable document raises `sender_policy_unavailable`,
+  which retries rather than accepting or terminally rejecting a sender.
 - All email and model strings are untrusted. Plain text is bounded; HTML is generated
   by escaping text and inserting only application-owned markup. The parser never
   fetches remote HTML resources.
@@ -962,8 +968,13 @@ require the same review.
   content labels.
 
 Sender policy is evaluated after MIME normalization and before attachment analysis or
-generation. `From` must contain exactly one valid normalized address present in the
-configured allowlist. The normalized sender must differ from the dedicated mailbox.
+generation. `From` must contain exactly one valid normalized address admitted by the
+live allowlist in `runtime-config/sender-policy`, read on every message so an operator
+edit applies to the next message without a restart, revision, or secret version. An
+entry is either one normalized address or one whole domain written as `@alza.cz`, which
+admits that exact normalized domain only and never a subdomain or a longer suffix.
+Unparsable entries are ignored, and a missing or empty document admits nobody. The
+normalized sender must differ from the dedicated mailbox.
 `Auto-Submitted` is accepted only when absent or `no`; `Precedence` rejects
 `bulk`, `list`, and `junk`; any non-empty `List-Id` rejects list mail; and any
 non-empty `X-Auto-Response-Suppress` other than `none` rejects automated mail. Policy

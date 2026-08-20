@@ -41,6 +41,8 @@ PROCESSING_LEASE_SECONDS = 120
 MAX_PROCESSING_ATTEMPTS = 5
 PROCESSING_COLLECTION = "message-processing"
 PROCESSING_DEADLINE_SECONDS = 105.0
+SENDER_POLICY_COLLECTION = "runtime-config"
+SENDER_POLICY_DOCUMENT = "sender-policy"
 
 _TELEMETRY_FIELDS = frozenset(
     {
@@ -100,27 +102,38 @@ class WorkItem:
 @dataclass(frozen=True, slots=True)
 class SenderPolicy:
     mailbox_address: str
-    allowed_senders: tuple[str, ...]
+    entries: Callable[[], Sequence[str]]
 
     def __post_init__(self) -> None:
         mailbox = _normalize_address(self.mailbox_address)
-        senders = tuple(
-            normalized
-            for sender in self.allowed_senders
-            if (normalized := _normalize_address(sender)) is not None
-        )
-        if mailbox is None or not senders or len(senders) != len(self.allowed_senders):
+        if mailbox is None:
             raise ValueError("invalid sender policy")
         object.__setattr__(self, "mailbox_address", mailbox)
-        object.__setattr__(self, "allowed_senders", tuple(dict.fromkeys(senders)))
 
     def rejection_code(self, inbound: InboundEmail) -> str | None:
         sender = _normalize_address(inbound.sender)
         if sender == self.mailbox_address or _is_automated(inbound):
             return "policy_reply_loop"
-        if sender is None or sender not in self.allowed_senders:
+        if sender is None or not self._admits(sender):
             return "policy_sender_not_allowed"
         return None
+
+    def _admits(self, sender: str) -> bool:
+        allowed = {
+            entry
+            for value in self.entries()
+            if (entry := normalize_sender_entry(value)) is not None
+        }
+        _, _, domain = sender.partition("@")
+        return sender in allowed or f"@{domain}" in allowed
+
+
+def normalize_sender_entry(value: str) -> str | None:
+    entry = value.strip()
+    if not entry.startswith("@"):
+        return _normalize_address(entry)
+    domain = _normalize_domain(entry[1:])
+    return None if domain is None else f"@{domain}"
 
 
 def sanitize_telemetry(fields: Mapping[str, object]) -> dict[str, object]:
@@ -165,7 +178,9 @@ class _Snapshot(Protocol):
 
 
 class _Document(Protocol):
-    def get(self, *, transaction: object) -> _Snapshot: ...
+    def get(self, *, transaction: object = None) -> _Snapshot: ...
+
+    def set(self, value: Mapping[str, object]) -> None: ...
 
 
 class _Collection(Protocol):
@@ -198,6 +213,29 @@ def _firestore_transaction_runner[T](
 ) -> T:
     transactional = firestore.transactional(operation)
     return cast(T, transactional(cast(Transaction, transaction)))
+
+
+class SenderPolicyStore:
+    def __init__(self, client: object) -> None:
+        self._client = cast(_FirestoreClient, client)
+
+    def allowed_senders(self) -> tuple[str, ...]:
+        try:
+            snapshot = self._document().get()
+        except Exception:  # noqa: BLE001 - live policy reads stay sanitized
+            raise ProcessingStoreError("sender_policy_unavailable") from None
+        record = snapshot.to_dict() if snapshot.exists else None
+        entries = record.get("allowed_senders") if isinstance(record, Mapping) else None
+        if not isinstance(entries, list):
+            return ()
+        return tuple(entry for entry in entries if isinstance(entry, str))
+
+    def set_allowed_senders(self, entries: Sequence[str]) -> None:
+        self._document().set({"allowed_senders": list(entries)})
+
+    def _document(self) -> _Document:
+        collection = self._client.collection(SENDER_POLICY_COLLECTION)
+        return collection.document(SENDER_POLICY_DOCUMENT)
 
 
 class ProcessingStore:
@@ -1012,13 +1050,21 @@ def _normalize_address(value: str) -> str | None:
     if not address or address.count("@") != 1:
         return None
     local, domain = address.rsplit("@", 1)
-    if not local or not domain or any(character.isspace() for character in address):
+    if not local or any(character.isspace() for character in address):
         return None
-    try:
-        normalized_domain = domain.encode("idna").decode("ascii").casefold()
-    except UnicodeError:
+    normalized_domain = _normalize_domain(domain)
+    if normalized_domain is None:
         return None
     return f"{local.casefold()}@{normalized_domain}"
+
+
+def _normalize_domain(value: str) -> str | None:
+    if not value or any(character.isspace() for character in value):
+        return None
+    try:
+        return value.encode("idna").decode("ascii").casefold()
+    except UnicodeError:
+        return None
 
 
 def _is_automated(inbound: InboundEmail) -> bool:

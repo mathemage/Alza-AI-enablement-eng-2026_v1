@@ -243,6 +243,12 @@ def make_coordinator(
     )
 
 
+def make_policy(
+    *entries: str, mailbox: str = "assistant@example.test"
+) -> processing.SenderPolicy:
+    return processing.SenderPolicy(mailbox_address=mailbox, entries=lambda: entries)
+
+
 @pytest.mark.parametrize(
     ("boundary", "expected_code"),
     (
@@ -506,10 +512,7 @@ def test_sec_01_sender_and_loop_policy_rejects_before_model_or_send(
         del args
         return source
 
-    policy = processing.SenderPolicy(
-        mailbox_address="assistant@example.test",
-        allowed_senders=("allowed@example.test",),
-    )
+    policy = make_policy("allowed@example.test")
     coordinator, store, gmail, analyzer, provider = make_coordinator(
         parser=selected_parser,
         sender_policy=policy,
@@ -524,10 +527,7 @@ def test_sec_01_sender_and_loop_policy_rejects_before_model_or_send(
 
 
 def test_sec_01_sender_allowlist_accepts_one_case_normalized_address() -> None:
-    policy = processing.SenderPolicy(
-        mailbox_address="Assistant@Example.Test",
-        allowed_senders=("ALLOWED@EXAMPLE.TEST",),
-    )
+    policy = make_policy("ALLOWED@EXAMPLE.TEST", mailbox="Assistant@Example.Test")
     coordinator, store, gmail, analyzer, provider = make_coordinator(
         sender_policy=policy
     )
@@ -718,10 +718,7 @@ def test_api_01_retry_and_terminal_policy_have_safe_acknowledgments() -> None:
     retry_gmail.get_error = GmailRetryableError("gmail_transport_error")
     retry_coordinator, retry_store, _, _, _ = make_coordinator(gmail=retry_gmail)
 
-    policy = processing.SenderPolicy(
-        mailbox_address="assistant@example.test",
-        allowed_senders=("allowed@example.test",),
-    )
+    policy = make_policy("allowed@example.test")
     terminal_coordinator, terminal_store, terminal_gmail, _, _ = make_coordinator(
         parser=lambda *args: replace(SOURCE, sender="outsider@example.test"),
         sender_policy=policy,
@@ -735,3 +732,87 @@ def test_api_01_retry_and_terminal_policy_have_safe_acknowledgments() -> None:
     assert (terminal_response.status_code, terminal_response.content) == (204, b"")
     assert terminal_store.terminal_codes == ["policy_sender_not_allowed"]
     assert terminal_gmail.label_calls == [(("AI/Error",), ())]
+
+
+@pytest.mark.parametrize(
+    ("sender", "expected_code"),
+    (
+        ("person@alza.cz", None),
+        ("Person <PERSON@ALZA.CZ>", None),
+        ("person@sub.alza.cz", "policy_sender_not_allowed"),
+        ("person@notalza.cz", "policy_sender_not_allowed"),
+        ("person@alza.cz.attacker.test", "policy_sender_not_allowed"),
+    ),
+)
+def test_sec_02_domain_entry_admits_only_the_exact_domain(
+    sender: str, expected_code: str | None
+) -> None:
+    policy = make_policy("@alza.cz")
+
+    assert policy.rejection_code(replace(SOURCE, sender=sender)) == expected_code
+
+
+@pytest.mark.parametrize(
+    "entries",
+    ((), ("not-an-address",), ("@",), ("   ",), ("@ alza.cz",), ("person@",)),
+)
+def test_sec_02_empty_or_unparsable_entries_reject_every_sender(
+    entries: tuple[str, ...],
+) -> None:
+    policy = make_policy(*entries)
+
+    rejection = policy.rejection_code(replace(SOURCE, sender="person@alza.cz"))
+
+    assert rejection == "policy_sender_not_allowed"
+
+
+def test_sec_02_loop_rejection_precedes_a_covering_domain_entry() -> None:
+    policy = make_policy("@example.test")
+
+    self_sent = policy.rejection_code(replace(SOURCE, sender="assistant@example.test"))
+    automated = policy.rejection_code(replace(SOURCE, auto_submitted="auto-replied"))
+
+    assert (self_sent, automated) == ("policy_reply_loop", "policy_reply_loop")
+
+
+def test_sec_02_policy_resolves_live_entries_for_every_message() -> None:
+    entries: list[str] = []
+    policy = processing.SenderPolicy(
+        mailbox_address="assistant@example.test",
+        entries=lambda: tuple(entries),
+    )
+    rejecting, rejecting_store, rejecting_gmail, _, _ = make_coordinator(
+        sender_policy=policy
+    )
+
+    assert asyncio.run(rejecting.process(WORK)) is ProcessResult.ACK
+    assert rejecting_store.terminal_codes == ["policy_sender_not_allowed"]
+    assert rejecting_gmail.send_calls == []
+
+    entries.append("@example.test")
+    accepting, accepting_store, accepting_gmail, analyzer, provider = make_coordinator(
+        sender_policy=policy
+    )
+
+    assert asyncio.run(accepting.process(WORK)) is ProcessResult.ACK
+    assert accepting_store.completed
+    assert analyzer.calls == provider.calls == 1
+    assert len(accepting_gmail.send_calls) == 1
+
+
+def test_sec_02_unavailable_allowlist_retries_without_terminal_state() -> None:
+    def unavailable() -> tuple[str, ...]:
+        raise ProcessingStoreError("sender_policy_unavailable")
+
+    policy = processing.SenderPolicy(
+        mailbox_address="assistant@example.test", entries=unavailable
+    )
+    coordinator, store, gmail, analyzer, provider = make_coordinator(
+        sender_policy=policy
+    )
+
+    assert asyncio.run(coordinator.process(WORK)) is ProcessResult.RETRY
+    assert store.terminal_codes == []
+    assert store.completed is False
+    assert gmail.send_calls == []
+    assert analyzer.calls == provider.calls == 0
