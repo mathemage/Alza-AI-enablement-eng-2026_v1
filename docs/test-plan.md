@@ -773,10 +773,10 @@ TF-DRIFT pass=true add=0 change=0 destroy=0
 POST-DEPLOY pass=true probe_vms=0 probe_disks=0 scheduler_count=2 enabled=true service_watch_untouched=true
 ```
 
-The current accepted private revision is `alza-ai-00006-b4t`, serving `100%` of
-traffic from immutable digest
-`sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903`.
-The previous issue 13 revision and digest remain available as rollback evidence.
+The revision accepted for issue 14 was `alza-ai-00006-b4t`, serving `100%` of traffic
+from immutable digest
+`sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903`. It remains
+available as rollback evidence and was superseded by the issue 33 revision below.
 
 ### Issue 14 observed validation
 
@@ -849,6 +849,126 @@ Terraform test: 7 passed, 0 failed
 CONTAINER-SMOKE pass=true nonroot=true status=200 body_exact=true legacy_404=true elapsed_ms=5278
 git diff --check: exit 0, no output
 ```
+
+## Issue 33 executable contract
+
+Issue 33 replaces the startup-snapshot sender allowlist with a live policy the operator
+can widen during a presentation. The contract is frozen as follows before
+implementation:
+
+- The allowlist owns Firestore document `runtime-config/sender-policy`, field
+  `allowed_senders`, a list of strings. `SenderPolicy` holds the dedicated mailbox and
+  an entry source, and resolves the source on every message, so an edit takes effect on
+  the next processed message without a restart, revision, or secret version.
+- `SenderPolicyStore.allowed_senders` reads that document and raises
+  `ProcessingStoreError` with `sender_policy_unavailable` when Firestore is unreachable,
+  so the coordinator retries instead of accepting or terminally rejecting the sender.
+- An entry is one normalized address such as `person@example.test`, or one whole domain
+  written as `@example.test`. A domain entry matches only the exact normalized sender
+  domain: `@example.test` never admits `sub.example.test`, `notexample.test`, or
+  `example.test.attacker.test`. Entries are IDNA and case normalized, unparsable entries
+  are ignored, and a missing, empty, or entirely unparsable document rejects every
+  sender with `policy_sender_not_allowed`.
+- Mailbox-self and automated-mail rejection keeps precedence, so a domain entry that
+  covers the dedicated mailbox still yields `policy_reply_loop`.
+- `RuntimeSettings` no longer reads `allowed_senders`; the OAuth client secret carries
+  only its installed client, `mailbox`, and `mailbox_key`.
+- Terraform keeps its frozen rule that the configuration owns no Firestore content, so
+  it never seeds or overwrites the document. The runtime identity keeps
+  `roles/datastore.user`, the deployed revision carries no allowlist configuration, and
+  the documented bootstrap command seeds `@alza.cz` once.
+- `alza-ai allowlist list|add|remove` reads and writes that document under an explicit
+  `--project`, normalizes and deduplicates entries, rejects a malformed entry with a
+  sanitized message and exit status `1`, and prints the resulting entries.
+
+The focused Red commands are
+`uv run pytest tests/test_processing.py tests/test_reliability.py tests/test_runtime.py tests/test_cli.py tests/test_documentation.py -q`
+and `terraform -chdir=infra test`. Red must fail only on the missing live policy,
+operator command, Terraform coverage, and documentation; a dependency, credential, or
+network failure is not acceptable Red, and no failing state is committed. Green requires
+the smallest code, configuration, and text that satisfy the contract, then the complete
+Python, Ruff, mypy, integration, container, and Terraform gates. Delivery requires an
+immutable-digest revision, read-only authenticated smoke and five-case Gmail acceptance,
+and one live acceptance in which a sender outside the allowlist is admitted by adding a
+domain entry with the operator command and no deployment.
+
+### Issue 33 observed validation
+
+Red was observed before any implementation change and never committed:
+
+```text
+uv run pytest tests/test_processing.py tests/test_reliability.py tests/test_runtime.py tests/test_cli.py tests/test_documentation.py -q --continue-on-collection-errors
+exit 1
+37 failed, 31 passed, 1 warning, 1 error, 107 subtests passed in 1.20s
+reason: the live entry source, SenderPolicyStore, the operator command, and the allowlist documentation were absent
+
+terraform -chdir=infra test
+exit 1
+7 passed, 1 failed, 1 skipped
+reason: the seed run block referenced an undeclared Firestore document resource
+```
+
+The Terraform Red exposed a conflict with a frozen rule rather than a missing resource:
+`GCP_03_bounds_cost_and_keeps_ci_safe` already requires that no `.tf` file contain
+`google_firestore_document`. The seed therefore moved to the documented operator
+command, and the replacement run block proves the runtime identity keeps
+`roles/datastore.user` while the deployed revision carries no allowlist configuration.
+
+Green and Refactor:
+
+```text
+uv run pytest tests/test_processing.py tests/test_reliability.py tests/test_runtime.py tests/test_cli.py tests/test_documentation.py -q
+95 passed, 1 warning, 107 subtests passed in 1.36s
+
+terraform -chdir=infra test
+8 passed, 0 failed
+```
+
+The candidate image was verified locally, pushed once by immutable digest, and applied
+as the only planned change:
+
+```text
+IMMUTABLE-CANDIDATE pass=true commit=7d9f711 nonroot=true status=200 body_exact=true legacy_404=true
+CONTAINER-SMOKE pass=true nonroot=true user=app status=200 body_exact=true legacy_404=true elapsed_ms=6330
+IMAGE-PUSH pass=true digest=sha256:8f29f8ba9bc542bd5cdc0a318d7a2daa5bde5ee4f24c0cd21d902004d92faba3
+TF-PLAN pass=true add=0 change=1 destroy=0 replace=0 only=cloud_run_image
+TF-APPLY pass=true add=0 change=1 destroy=0
+DEPLOYMENT pass=true revision=alza-ai-00007-q7h traffic=100 ready=true digest=sha256:8f29f8ba9bc542bd5cdc0a318d7a2daa5bde5ee4f24c0cd21d902004d92faba3
+SECRET-VERSION pass=true keys=installed,mailbox,mailbox_key allowlist_absent=true
+TF-DRIFT pass=true add=0 change=0 destroy=0
+POST-DEPLOY pass=true scheduler_count=2 enabled=true subscription_count=3 service_watch_untouched=true
+```
+
+The deployed revision was then read back with the existing opt-in acceptance commands,
+which send no message and never renew or stop the watch:
+
+```text
+PREFLIGHT pass=true identity_match=true adc_match=true project_match=true billing_match=true region_match=true mailbox_confirmed=true cost_approved=true elapsed_ms=8738
+AUTH-SMOKE pass=true private=true immutable=true ready=true traffic=true scaling=true timeout=true health_probe=true quotas=true scheduler=true subscriptions=true budget=true public_invoker=false elapsed_ms=9037
+GCP acceptance: 2 passed in 17.85s
+LIVE-01-plain pass=true latency_ms=69000 reply_count=1 attachment_count=0 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-pdf pass=true latency_ms=90000 reply_count=1 attachment_count=1 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-audio pass=true latency_ms=69000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-image pass=true latency_ms=51000 reply_count=1 attachment_count=2 citation_count=0 state=completed thread=true headers=true labels=true
+LIVE-01-current pass=true latency_ms=62000 reply_count=1 attachment_count=0 citation_count=1 state=completed thread=true headers=true labels=true
+Gmail acceptance: 1 passed, 1 warning in 5.83s
+```
+
+SEC-02 and OPS-02 were then proven against the deployed revision with two synthetic
+inserted messages from the same domain sender, one before and one after the operator
+command. No revision, restart, or secret version was involved between them, and each
+reply went only to the message's own `Reply-To`, which is the operator address:
+
+```text
+LIVE-33-allowlist-before pass=true entry_count=1 domain_entry=false
+LIVE-33-rejected pass=true latency_ms=15552 state=terminal_error error_code=policy_sender_not_allowed reply_count=0 error_label=true
+LIVE-33-allowlist-add pass=true entry_count=2 deployment=false restart=false secret_version=false
+LIVE-33-domain pass=true latency_ms=15334 state=completed reply_count=1 thread=true reply_to_honored=true processed_label=true
+```
+
+The accepted private revision is `alza-ai-00007-q7h` at immutable digest
+`sha256:8f29f8ba9bc542bd5cdc0a318d7a2daa5bde5ee4f24c0cd21d902004d92faba3`, and the live
+allowlist holds the operator address plus `@alza.cz`.
 
 ## Test levels and phase gates
 
@@ -1012,6 +1132,8 @@ requirement cannot silently lose coverage.
 | FAIL-02 | Terminal MIME/policy failures persist terminal state, apply `AI/Error`, leave unread, and acknowledge only after terminal handling succeeds | Unit, contract, integration | 09, 11, 12 |
 | FAIL-03 | Exhausted delivery reaches the shared dead-letter path and is observable without content; terminal records are skipped by reconciliation | Terraform, integration, authenticated smoke | 03, 10, 11, 13 |
 | SEC-01 | Sender allowlist, self/automated/bulk loop rejection, HTML escaping, citation scheme/host validation, and secret handling resist unsafe inputs | Unit, integration | 04, 08, 11, 12 |
+| SEC-02 | The sender allowlist resolves per message from Firestore, accepts address and exact-domain entries, keeps loop rejection first, fails closed on an empty document, and retries an unavailable read | Unit, contract, integration, live Gmail | 33 |
+| OPS-02 | The allowlist document stays outside Terraform and the deployed revision, and `alza-ai allowlist` lists, adds, and removes entries live without a deployment | Unit, Terraform, documentation validation, live Gmail | 33 |
 | PRIV-01 | Gmail notifications contain only the Gmail-required mailbox address/history ID; `email-work`, Firestore, logs, Terraform state, HTTP responses, and evidence contain no bodies, prompts, replies, attachment bytes, extracted text, transcripts, insights, addresses, tokens, or secrets | Unit, Terraform, integration, authenticated smoke, live Gmail | 03-14 |
 | OBS-01 | Sanitized logs contain correlation/opaque message IDs, stage/state, provider/model, retry class, error code, and per-stage/total latency only | Unit, integration, authenticated smoke | 11-13 |
 | TIME-01 | Internal processing stops by `105s`, below the `115s` request timeout; every live case finishes within `120s` | Unit, integration, authenticated smoke, live Gmail | 03, 11-13 |

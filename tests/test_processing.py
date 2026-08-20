@@ -26,12 +26,15 @@ from alza_ai.gmail import (
 from alza_ai.main import create_app
 from alza_ai.mime import MimeParseError
 from alza_ai.processing import (
+    SENDER_POLICY_COLLECTION,
+    SENDER_POLICY_DOCUMENT,
     ClaimDisposition,
     MessageCoordinator,
     ProcessingState,
     ProcessingStore,
     ProcessingStoreError,
     ProcessResult,
+    SenderPolicyStore,
     WorkItem,
 )
 
@@ -93,10 +96,15 @@ class FakeDocument:
         self._client = client
         self.path = path
 
-    def get(self, *, transaction: object) -> FakeSnapshot:
+    def get(self, *, transaction: object = None) -> FakeSnapshot:
         del transaction
+        if self._client.read_error is not None:
+            raise self._client.read_error
         value = self._client.documents.get(self.path)
         return FakeSnapshot(value)
+
+    def set(self, value: Mapping[str, object]) -> None:
+        self._client.documents[self.path] = dict(value)
 
 
 class FakeCollection:
@@ -123,6 +131,7 @@ class FakeFirestore:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, object]] = {}
         self.transaction_count = 0
+        self.read_error: Exception | None = None
         self._lock = threading.Lock()
 
     def collection(self, name: str) -> FakeCollection:
@@ -701,3 +710,58 @@ def test_proc_03_asgi_ambiguous_acceptance_recovers_to_204() -> None:
     assert (first.status_code, recovered.status_code) == (503, 204)
     assert first.content == recovered.content == b""
     assert len(gmail.send_calls) == 1
+
+
+POLICY_PATH = f"{SENDER_POLICY_COLLECTION}/{SENDER_POLICY_DOCUMENT}"
+
+
+def test_sec_02_sender_policy_store_reads_the_live_document() -> None:
+    client = FakeFirestore()
+    client.documents[POLICY_PATH] = {
+        "allowed_senders": ["person@example.test", "@alza.cz"]
+    }
+
+    assert SenderPolicyStore(client).allowed_senders() == (
+        "person@example.test",
+        "@alza.cz",
+    )
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    (
+        (None, ()),
+        ({}, ()),
+        ({"allowed_senders": "person@example.test"}, ()),
+        ({"allowed_senders": []}, ()),
+        ({"allowed_senders": ["person@example.test", 7]}, ("person@example.test",)),
+    ),
+)
+def test_sec_02_sender_policy_store_ignores_absent_or_malformed_entries(
+    document: Mapping[str, object] | None, expected: tuple[str, ...]
+) -> None:
+    client = FakeFirestore()
+    if document is not None:
+        client.documents[POLICY_PATH] = dict(document)
+
+    assert SenderPolicyStore(client).allowed_senders() == expected
+
+
+def test_sec_02_sender_policy_store_maps_unavailable_reads_to_retryable() -> None:
+    client = FakeFirestore()
+    client.read_error = RuntimeError("PRIVATE FIRESTORE FAILURE")
+
+    with pytest.raises(ProcessingStoreError, match="^sender_policy_unavailable$"):
+        SenderPolicyStore(client).allowed_senders()
+
+
+def test_sec_02_sender_policy_store_replaces_the_live_document() -> None:
+    client = FakeFirestore()
+    store = SenderPolicyStore(client)
+
+    store.set_allowed_senders(("person@example.test", "@alza.cz"))
+
+    assert client.documents[POLICY_PATH] == {
+        "allowed_senders": ["person@example.test", "@alza.cz"]
+    }
+    assert store.allowed_senders() == ("person@example.test", "@alza.cz")

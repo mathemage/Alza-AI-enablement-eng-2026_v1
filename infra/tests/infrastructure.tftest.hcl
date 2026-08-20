@@ -493,3 +493,18 @@ run "GCP_03_rejects_higher_exposure_caps" {
     var.max_reply_output_tokens,
   ]
 }
+
+run "OPS_02_keeps_the_live_sender_allowlist_out_of_the_deployment" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      contains(local.runtime_project_roles, "roles/datastore.user"),
+      alltrue([
+        for setting in google_cloud_run_v2_service.app.template[0].containers[0].env :
+        !strcontains(lower(setting.name), "sender") && !strcontains(lower(setting.name), "allow")
+      ]),
+    ])
+    error_message = "The runtime must read the live sender allowlist from Firestore, never from deployment configuration."
+  }
+}

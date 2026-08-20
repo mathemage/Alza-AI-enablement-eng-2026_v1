@@ -34,6 +34,15 @@ The sanitized acceptance run on 2026-08-19 proved one correctly threaded reply,
 Exact sanitized results live in the
 [test plan](test-plan.md#issue-13-observed-sanitized-acceptance).
 
+## Live sender allowlist
+
+Only allowlisted senders are answered; everything else is terminally rejected before
+any model call. The allowlist is Firestore document `runtime-config/sender-policy`,
+read on every message, and holds addresses or whole domains such as `@alza.cz`, which
+admits that exact domain only. `alza-ai allowlist add` admits a new sender during this
+presentation, without a deployment, restart, or secret version, and mailbox-self and
+automated-mail loop rejection still wins over any entry.
+
 ## Privacy
 
 Gmail remains the source and reply system of record. Its notification topic carries

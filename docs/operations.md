@@ -117,6 +117,32 @@ republish the unchanged envelope to exactly one of `gmail-notifications` or
 succeeds and its durable result is verified. Never replay a terminal record,
 generated reply, MIME body, or attachment.
 
+## Sender allowlist
+
+The allowlist lives in Firestore document `runtime-config/sender-policy`, is read on
+every message, and is edited without a deployment, restart, or secret version. Each
+entry is one normalized address or one whole domain such as `@alza.cz`, which admits
+that exact domain only. Terraform never owns this document, so a new project is seeded
+with the same `add` command. A missing or empty document admits nobody, and every
+sender is rejected with `policy_sender_not_allowed`.
+
+```bash
+uv run alza-ai allowlist list --project alza-ai-email-bot-2026
+uv run alza-ai allowlist add --project alza-ai-email-bot-2026 person@example.com
+uv run alza-ai allowlist add --project alza-ai-email-bot-2026 @alza.cz
+uv run alza-ai allowlist remove --project alza-ai-email-bot-2026 person@example.com
+```
+
+Each command prints the resulting entries. A malformed entry, or a removal of an entry
+that is not present, changes nothing and exits `1`. An entry applies to the next message
+only: a message already rejected keeps its terminal record, reconciliation skips it, and
+the sender must send a new message. Revocation likewise takes effect on the next
+message, and mail already accepted is not recalled. Loop protection is independent of
+the allowlist: the dedicated mailbox itself and automated, bulk, list, or
+suppression-marked mail stay rejected with `policy_reply_loop` even when a domain entry
+covers them. If Firestore is unreachable the message retries with
+`sender_policy_unavailable` instead of being accepted or terminally rejected.
+
 ## Provider, quota, and cost changes
 
 The accepted deployment has `RESPONSE_PROVIDER=gemini` and
@@ -177,7 +203,7 @@ Terraform deletion does not mean that every related datum disappears immediately
 | Owner | Residual data and required decision |
 | --- | --- |
 | Gmail | Source messages, sent replies, `AI/Processed`/`AI/Error` labels, and mailbox history remain until the mailbox operator deletes them. |
-| Firestore | Operational metadata is deleted with the database; confirm deletion and account for provider recovery/retention behavior. |
+| Firestore | Operational metadata and the `runtime-config/sender-policy` allowlist are deleted with the database; confirm deletion and account for provider recovery/retention behavior. |
 | Pub/Sub | Topics, subscriptions, and retained deliveries are deleted; export nothing containing mailbox or message metadata. |
 | Scratch Cloud Storage | Normal cleanup and the one-day lifecycle should leave no objects, but the bucket must be empty because `force_destroy=false`. |
 | Artifact Registry | The deployed image and digest are removed with the repository; separately retained copies remain their owner's responsibility. |

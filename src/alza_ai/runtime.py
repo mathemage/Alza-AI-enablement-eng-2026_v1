@@ -17,7 +17,12 @@ from alza_ai.attachments import (
 from alza_ai.gmail import GmailApiGateway
 from alza_ai.main import create_app
 from alza_ai.oauth import GMAIL_MODIFY_SCOPE
-from alza_ai.processing import MessageCoordinator, ProcessingStore, SenderPolicy
+from alza_ai.processing import (
+    MessageCoordinator,
+    ProcessingStore,
+    SenderPolicy,
+    SenderPolicyStore,
+)
 from alza_ai.reply_providers import load_reply_provider
 from alza_ai.synchronization import (
     MailboxSynchronizer,
@@ -36,7 +41,6 @@ class RuntimeSettings:
     scratch_bucket: str
     mailbox: str
     mailbox_key: str
-    allowed_senders: tuple[str, ...]
     gmail_topic: str
     work_topic: str
     credentials: Credentials = field(repr=False)
@@ -66,15 +70,6 @@ class RuntimeSettings:
         mailbox_key = _document_string(
             client_document, "mailbox_key", "runtime_oauth_client_invalid"
         )
-        allowed_value = client_document.get("allowed_senders")
-        if not isinstance(allowed_value, list) or not all(
-            isinstance(item, str) and item.strip() for item in allowed_value
-        ):
-            raise RuntimeConfigurationError("runtime_sender_policy_invalid")
-        allowed_senders = tuple(cast(str, item).strip() for item in allowed_value)
-        if not allowed_senders:
-            raise RuntimeConfigurationError("runtime_sender_policy_invalid")
-
         scopes = token_document.get("scopes")
         if scopes != [GMAIL_MODIFY_SCOPE]:
             raise RuntimeConfigurationError("runtime_oauth_scope_invalid")
@@ -115,7 +110,6 @@ class RuntimeSettings:
             scratch_bucket=scratch_bucket,
             mailbox=mailbox,
             mailbox_key=mailbox_key,
-            allowed_senders=allowed_senders,
             gmail_topic=f"projects/{project_id}/topics/gmail-notifications",
             work_topic=f"projects/{project_id}/topics/email-work",
             credentials=credentials,
@@ -152,6 +146,7 @@ def build_components(
         gmail.ensure_labels(("AI/Processed", "AI/Error"))
         firestore_client = firestore.Client(project=settings.project_id)
         processing_store = ProcessingStore(firestore_client)
+        sender_policy_store = SenderPolicyStore(firestore_client)
         synchronization_store = SynchronizationStore(firestore_client)
         storage = CloudStorageScratchStorage(bucket_name=settings.scratch_bucket)
         model = GeminiMultimodalModel(
@@ -162,7 +157,9 @@ def build_components(
         provider = load_reply_provider(settings.environment)
         publisher_client = pubsub_v1.PublisherClient()
         publisher = PubSubWorkPublisher(publisher_client, topic=settings.work_topic)
-        sender_policy = SenderPolicy(settings.mailbox, settings.allowed_senders)
+        sender_policy = SenderPolicy(
+            settings.mailbox, sender_policy_store.allowed_senders
+        )
         coordinator = MessageCoordinator(
             store=processing_store,
             gmail=gmail,
