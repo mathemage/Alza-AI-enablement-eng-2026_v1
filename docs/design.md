@@ -788,12 +788,13 @@ immutable registry digest.
 
 | Accepted deployment fact | Value |
 | --- | --- |
-| Cloud Run revision | `alza-ai-00006-b4t`, `100%` traffic |
-| Image | `sha256:f2f474bc0005dd6a4b5876b52e3d90e0cff08170264d18b6d23f59fa185b8903` |
+| Cloud Run revision | `alza-ai-00007-q7h`, `100%` traffic |
+| Image | `sha256:8f29f8ba9bc542bd5cdc0a318d7a2daa5bde5ee4f24c0cd21d902004d92faba3` |
 | Access and region | Internal-only, IAM required, no public principal, `europe-west3` |
 | Runtime | Gemini reply provider, minimum/maximum instances `0/1`, concurrency `1`, timeout `115s` |
 | Per-message ceilings | Attachment/generation/search calls `5/1/1`; reply output `2048` tokens |
 | Operations | Scheduler jobs enabled, push subscriptions active, future-dated Gmail watch |
+| Sender policy | Live Firestore allowlist `runtime-config/sender-policy`, read per message |
 | Cost control | Project budget alert `480 CZK`; an alert is not a hard spending cap |
 | Health boundary | HTTP startup probe targets `/health`; accepted-image and authenticated same-project internal GET both return exact `200 {"status":"ok"}` |
 
